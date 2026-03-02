@@ -18,7 +18,7 @@ target_include_directories(record_function_benchmark PUBLIC
 caffe2_binary_target("speed_benchmark_torch.cc")
 caffe2_binary_target("compare_models_torch.cc")
 
-if(BUILD_TEST)
+if(BUILD_TEST AND USE_BENCHMARK)
   # Core overhead benchmark
   caffe2_binary_target("core_overhead_benchmark.cc")
   target_link_libraries(core_overhead_benchmark benchmark)

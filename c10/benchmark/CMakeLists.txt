@@ -1,7 +1,7 @@
 # ---[ Benchmark binaries.
 
 file(GLOB_RECURSE C10_ALL_BENCH_FILES *.cpp)
-if(BUILD_TEST)
+if(BUILD_TEST AND USE_BENCHMARK)
   foreach(bench_src ${C10_ALL_BENCH_FILES})
     get_filename_component(bench_file_name ${bench_src} NAME_WE)
     set(bench_name "c10_${bench_file_name}")
