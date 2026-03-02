@@ -2,7 +2,6 @@
 # Owner(s): ["oncall: distributed"]
 
 import contextlib
-import copy
 import itertools
 import math
 from typing import cast
@@ -50,8 +49,6 @@ def _get_all_factorizations(n):
         12 -> [(2, 6), (6, 2), (3, 4), (4, 3), (2, 2, 3), (2, 3, 2), (3, 2, 2)]
         36 -> [(2, 18), (18, 2), (3, 12), ..., (2, 2, 9), ..., (2, 2, 3, 3), ...]
     """
-    from itertools import permutations
-
     def get_sorted_factorizations(remaining, min_factor=2):
         if remaining == 1:
             return [()]
@@ -66,7 +63,7 @@ def _get_all_factorizations(n):
     all_factorizations = set()
     for factors in sorted_facts:
         if len(factors) >= 2:
-            for perm in permutations(factors):
+            for perm in itertools.permutations(factors):
                 all_factorizations.add(perm)
     return list(all_factorizations)
 
@@ -1298,7 +1295,7 @@ class TestViewOps(DTensorTestBase):
             2 * mesh.size(0) + 1,
         ]:
             tensor_dims_unflatten[shard_dim] = tensor_dim
-            local_tensor_dims_unflatten = copy.deepcopy(tensor_dims_unflatten)
+            local_tensor_dims_unflatten = list(tensor_dims_unflatten)
             local_tensor_dims_unflatten[shard_dim] = math.ceil(
                 tensor_dim * 1.0 / mesh.size(0)
             )
@@ -1572,7 +1569,7 @@ class TestViewOps(DTensorTestBase):
             2 * mesh.size(mesh_dim_idx) + 1,
         ]:
             tensor_dims_unflatten[shard_dim] = tensor_dim
-            local_tensor_dims_unflatten = copy.deepcopy(tensor_dims_unflatten)
+            local_tensor_dims_unflatten = list(tensor_dims_unflatten)
             local_tensor_dims_unflatten[shard_dim] = math.ceil(
                 tensor_dim * 1.0 / mesh.size(mesh_dim_idx)
             )
