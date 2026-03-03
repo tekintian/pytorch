@@ -1,9 +1,11 @@
 import torch
 
+
 def ensure_size(input, dim, size):
     if input.shape[dim] != size:
         return input.narrow(dim, 0, size)
     return input
+
 
 def chunk_iter(total_size, chunk_size):
     for start in range(0, total_size, chunk_size):
@@ -15,16 +17,16 @@ def chunk_iter(total_size, chunk_size):
 
 @torch.library.custom_op("torch_nn::linear_cross_entropy_chunking", mutates_args=())
 def linear_cross_entropy_chunking(
-        input: torch.Tensor,
-        linear_weight: torch.Tensor,
-        target: torch.Tensor,
-        weight: torch.Tensor,
-        reduction: str,
-        label_smoothing: float,
-        batch_chunk_size: int,
-        grad_inplace: bool,
-        compute_input_grad: bool,
-        compute_linear_weight_grad: bool
+    input: torch.Tensor,
+    linear_weight: torch.Tensor,
+    target: torch.Tensor,
+    weight: torch.Tensor,
+    reduction: str,
+    label_smoothing: float,
+    batch_chunk_size: int,
+    grad_inplace: bool,
+    compute_input_grad: bool,
+    compute_linear_weight_grad: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = input.device
     dtype = input.dtype
@@ -78,7 +80,9 @@ def linear_cross_entropy_chunking(
         )
     else:
         G = None
-        grad_linear_weight = torch.empty((0,), dtype=dtype, device=device, requires_grad=False)
+        grad_linear_weight = torch.empty(
+            (0,), dtype=dtype, device=device, requires_grad=False
+        )
 
     if reduction in {"mean", "sum"}:
         output = torch.zeros((), device=device, dtype=dtype, requires_grad=False)
@@ -99,7 +103,6 @@ def linear_cross_entropy_chunking(
         # Compute output.
         L_ = linear_weight.narrow(0, 0, num_classes)
         X__ = ensure_size(X_, 1, num_classes)
-        corrXmax: torch.Tensor = torch.empty(())
 
         torch.mm(x, L_.T, out=X__)  # projection
 
@@ -139,9 +142,7 @@ def linear_cross_entropy_chunking(
 
             if compute_linear_weight_grad:
                 G_ = ensure_size(G, 0, num_classes)
-                grad_L_ = grad_linear_weight.narrow(
-                    0, 0, num_classes
-                )
+                grad_L_ = grad_linear_weight.narrow(0, 0, num_classes)
                 x_ = x.narrow(1, 0, in_features)
                 G__ = ensure_size(G_, 1, in_features)
                 G__.zero_()
@@ -155,16 +156,16 @@ def linear_cross_entropy_chunking(
 
 @linear_cross_entropy_chunking.register_fake
 def _(
-        input,
-        linear_weight,
-        target,
-        weight,
-        reduction,
-        label_smoothing,
-        batch_chunk_size,
-        grad_inplace,
-        compute_input_grad,
-        compute_linear_weight_grad,
+    input,
+    linear_weight,
+    target,
+    weight,
+    reduction,
+    label_smoothing,
+    batch_chunk_size,
+    grad_inplace,
+    compute_input_grad,
+    compute_linear_weight_grad,
 ):
     if reduction in {"mean", "sum"}:
         result = torch.empty((), dtype=input.dtype, device=input.device)
@@ -175,16 +176,25 @@ def _(
     if compute_input_grad:
         grad_input = torch.empty_like(input)
     else:
-        grad_input = torch.empty((0,), dtype=input.dtype, device=input.device, requires_grad=False)
+        grad_input = torch.empty(
+            (0,), dtype=input.dtype, device=input.device, requires_grad=False
+        )
     if compute_linear_weight_grad:
         grad_linear_weight = torch.empty_like(linear_weight)
     else:
-        grad_linear_weight = torch.empty((0,), dtype=linear_weight.dtype, device=linear_weight.device, requires_grad=False)
+        grad_linear_weight = torch.empty(
+            (0,),
+            dtype=linear_weight.dtype,
+            device=linear_weight.device,
+            requires_grad=False,
+        )
     return result, grad_input, grad_linear_weight
 
 
 def setup_context(ctx, inputs, output):
-    ctx.grad_inplace, ctx.compute_input_grad, ctx.compute_linear_weight_grad = inputs[-3:]
+    ctx.grad_inplace, ctx.compute_input_grad, ctx.compute_linear_weight_grad = inputs[
+        -3:
+    ]
     _, grad_input, grad_linear_weight = output
     save_indices: list[int | None] = [None, None]
     saved = []
@@ -231,4 +241,7 @@ def linear_cross_entropy_chunking_backward(ctx, *grads):
 
     return tuple(result)
 
-linear_cross_entropy_chunking.register_autograd(linear_cross_entropy_chunking_backward, setup_context=setup_context)
+
+linear_cross_entropy_chunking.register_autograd(
+    linear_cross_entropy_chunking_backward, setup_context=setup_context
+)
