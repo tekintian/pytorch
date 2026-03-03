@@ -544,11 +544,92 @@
   - Lint
   - pull
 
-- name: superuser
+- name: Metamates
   patterns:
   - '*'
   approved_by:
-  - pytorch/metamates
+  - aelavender
+  - andrewor14
+  - andyanwang
+  - angelayi
+  - ankitageorge
+  - anshul-si
+  - aorenste
+  - atalman
+  - azahed98
+  - blaine-rister
+  - bobrenjc93
+  - BoyuanFeng
+  - choijon5
+  - ColinPeppler
+  - d4l3k
+  - danielvegamyhre
+  - dcci
+  - desertfire
+  - divyanshk
+  - dolpm
+  - drisspg
+  - dzmitry-huba
+  - fduwjj
+  - fegin
+  - fxdawnn
+  - georgiaphillips
+  - H-Huang
+  - henrylhtsang
+  - htyu
+  - huydhn
+  - IvanKobzarev
+  - izaitsevfb
+  - jananisriram
+  - janeyx99
+  - jathu
+  - jbschlosser
+  - jcaip
+  - jeanschmidt
+  - jerryzh168
+  - jijunyan
+  - kapilsh
+  - karthickai
+  - laithsakka
+  - liangel-02
+  - Lucaskabela
+  - LucasLLC
+  - manuelcandales
+  - Microve
+  - mikaylagawarecki
+  - mlazos
+  - mori360
+  - msaroufim
+  - NikhilAPatel
+  - njriasan
+  - oulgen
+  - PaulZhang12
+  - pianpwk
+  - ramanishsingh
+  - sanketpurandare
+  - scotts
+  - seemethere
+  - SherlockNoMad
+  - shunting314
+  - slayton58
+  - soulitzer
+  - sraikund16
+  - tianrengao
+  - tianyu-l
+  - tugsbayasgalan
+  - v0i0
+  - wconstab
+  - wdvr
+  - weifengpy
+  - williamwen42
+  - xmfan
+  - yangw-dev
+  - ydwu4
+  - yf225
+  - yushangdi
+  - zhxchen17
+  - zoranzhao
+  - zpcore
   mandatory_checks_name:
   - EasyCLA
   - Lint
