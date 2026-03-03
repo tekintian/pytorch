@@ -4920,16 +4920,10 @@ std::tuple<Tensor, Tensor, Tensor> layer_norm_double_backward(
   auto save_mean = save_mean_t.reshape({M, 1});
   auto save_invstd = save_invstd_t.reshape({M, 1});
   if (at::GradMode::is_enabled() && input.requires_grad()) {
-    // save_mean and save_invstd have no autograd history connecting them
-    // to input.  The double backward formula analytically accounts for
-    // their dependency, so second-order gradients are correct.  But
-    // autograd cannot differentiate through that dependency for 3rd+
-    // order derivatives.  Pass input through the DelayedError so the
-    // error node's edges connect back to input, and autograd raises a
-    // clear error instead of silently giving wrong results.
+    // save_mean and save_invstd have no autograd history, error instead
+    // of silently giving wrong results for higher-order derivatives.
     auto err = std::make_shared<DelayedError>(
-        "layer_norm double backward does not support 3rd+ order "
-        "derivatives.",
+        "layer_norm does not support 3rd+ order derivatives.",
         /* num inputs */ 3);
     auto result = err->apply({save_mean, save_invstd, input});
     save_mean = result[0];
