@@ -1,8 +1,8 @@
 import importlib
 import importlib.metadata
 import os
-
 from functools import cache
+
 
 @cache
 def check_native_jit_disabled() -> bool:
@@ -31,6 +31,7 @@ def _unavailable_reason(deps: list[tuple[str, str]]) -> None | str:
             )
     return None
 
+
 def _available_version(package: str) -> tuple[int, int, int]:
     """
     Get version of the installed "nvidia-cutlass-dsl" package
@@ -42,5 +43,3 @@ def _available_version(package: str) -> tuple[int, int, int]:
     major, minor, update = (int(vi) for vi in version.split("."))
 
     return (major, minor, update)
-
-

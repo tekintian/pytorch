@@ -1,15 +1,13 @@
 import functools
-import importlib
-import importlib.metadata
 import logging
-import os
 
-from .registry import register_op_registerer, _RegisterFn
 from .common_utils import (
-    check_native_jit_disabled,
     _available_version,
     _unavailable_reason,
+    check_native_jit_disabled,
 )
+from .registry import _RegisterFn, register_op_registerer
+
 
 log = logging.getLogger(__name__)
 
@@ -17,6 +15,7 @@ _CUTEDSL_AVAILABLE = None
 _CUTEDSL_VERSION = None
 
 log = logging.getLogger(__name__)
+
 
 @functools.cache
 def _check_runtime_available() -> bool:
@@ -31,10 +30,11 @@ def _check_runtime_available() -> bool:
     if _CUTEDSL_AVAILABLE is not None:
         return _CUTEDSL_AVAILABLE
 
-    deps = [("nvidia_cutlass_dsl", "cutlass"),
-            ("apache_tvm_ffi", "tvm_ffi"),
-            ("cuda_bindings", "cuda.bindings.driver"),
-           ]
+    deps = [
+        ("nvidia_cutlass_dsl", "cutlass"),
+        ("apache_tvm_ffi", "tvm_ffi"),
+        ("cuda_bindings", "cuda.bindings.driver"),
+    ]
     reason = _unavailable_reason(deps)
     if reason is None:
         _CUTEDSL_AVAILABLE = True
@@ -49,17 +49,21 @@ def _check_runtime_available() -> bool:
         _CUTEDSL_AVAILABLE = False
     return _CUTEDSL_AVAILABLE
 
+
 _check_runtime_available()
 
-def runtime_available() -> bool:
+
+def runtime_available() -> None | bool:
     return _CUTEDSL_AVAILABLE
+
 
 def runtime_version() -> None | tuple[int, int, int]:
     return _CUTEDSL_VERSION
 
+
 def register_op(fn: _RegisterFn) -> None:
     if (not _CUTEDSL_AVAILABLE) or check_native_jit_disabled():
-        log.info(f'{__name__} not registering native ops')
+        log.info("%s not registering native ops", __name__)
         return
 
     register_op_registerer(fn)
