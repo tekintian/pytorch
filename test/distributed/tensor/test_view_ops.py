@@ -2551,22 +2551,5 @@ class TestViewOps3D(DTensorTestBase):
         self.assertEqual(inps_viewed._local_tensor, expected_local_tensor)
 
 
-# TestViewOpsWithLocalTensor = create_local_tensor_test_class(
-#     TestViewOps,
-#     skipped_tests=[
-#         # Comparing data pointers is not supported for local tensor
-#         "test_dtensor_view_op_uneven",
-#         "test_dtensor_flatten_1d",
-#         "test_dtensor_flatten_2d",
-#         "test_dtensor_unflatten_1d",
-#         "test_dtensor_unflatten_2d",
-#         "test_dtensor_unflatten_3d",
-#     ],
-# )
-
-# TestViewOps3DWithLocalTensor = create_local_tensor_test_class(
-#     TestViewOps3D,
-# )
-
 if __name__ == "__main__":
     run_tests()
