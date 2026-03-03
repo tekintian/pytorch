@@ -57,6 +57,7 @@ from torch.testing._internal.common_utils import dtype2prec_DONTUSE
 from torch.testing._internal.common_cuda import tf32_on_and_off, tf32_off, tf32_on
 from torch.types import _TensorOrTensors
 from torch.testing._internal.common_mkldnn import reduced_f32_on_and_off
+from torch.testing import make_tensor
 
 AMPERE_OR_ROCM = TEST_WITH_ROCM or torch.cuda.is_tf32_supported()
 
@@ -7342,6 +7343,115 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         input_1 = torch.rand([5, 0], dtype=torch.float32)
         input_2 = torch.rand([5, 0], dtype=torch.float32)
         torch.nn.CrossEntropyLoss()(input_1, input_2)
+
+    def test_linear_cross_entropy_loss(self, dtype=torch.float32):
+
+        def make_target(num_classes, shape, ii, device, dtype):
+            if dtype.is_floating_point:
+                return make_tensor(shape, low=0, high=1, device=device, dtype=dtype, requires_grad=False)
+            else:
+                target = torch.randint(
+                    0,
+                    num_classes,
+                    shape,
+                    device=device,
+                    dtype=dtype,
+                    requires_grad=False,
+                )
+                if ii >= 0 and torch.all(target == ii):
+                    target[0] = random.sample(sorted(set(range(num_classes)) - {ii}), 1)[0]
+                return target
+
+
+        def sizes_and_options():
+            max_memory_gb = 1.4e-6 * dtype.itemsize / torch.float32.itemsize
+            num_batches, in_features, num_classes = sizes = (8, 8, 8)
+            # unspecified chunk sizes default maximal chunk sizes for
+            # best processing performance:
+            yield sizes, dict()
+            # fixed chunk size reduces memory usage but may reduce
+            # processing performance:
+            yield sizes, dict(batch_chunk_size=2)
+            # compute gradients inplace to reduce memory usage but the
+            # operation will be not composite-compliant:
+            yield sizes, dict(grad_inplace=True)
+            yield sizes, dict(batch_chunk_size=2, grad_inplace=True)
+
+        def samples(device, dtype):
+
+            for (num_batches, in_features, num_classes), options in sizes_and_options():
+
+                if num_batches is None:
+                    batch_dims = ()
+                else:
+                    batch_dims = (num_batches,)
+                weights = [None, torch.exp(torch.randn(num_classes, device=device, dtype=dtype, requires_grad=False))]
+
+                # generate samples for LinearCrossEntropyLoss and its forward:
+                for reduction, ii, ls, w, of in product(
+                        ["sum", "mean", "none"],
+                        [-100, 0, num_classes - 1],
+                        [0.0, 0.1],
+                        weights,
+                        [(), (3, 2)]):
+                    module_args = (in_features, num_classes)
+                    module_kwargs = dict(
+                        out_features=of,
+                        device=device,
+                        dtype=dtype,
+                        reduction=reduction,
+                        weight=w,
+                        ignore_index=ii,
+                        label_smoothing=ls,
+                        options=F.LinearCrossEntropyOptions(**options)
+                    )
+                    if not batch_dims and of:
+                        # K-dimensional loss requires batches dimension
+                        continue
+
+                    for target_dtype in [torch.int64, dtype]:
+                        if target_dtype.is_floating_point:
+                            target_shape = (*batch_dims, num_classes, *of)
+                            if ii != -100:
+                                # ignore_index is not supported for floating point target
+                                continue
+                        else:
+                            target_shape = (*batch_dims, *of)
+                        input = torch.randn(
+                            (*batch_dims, in_features),
+                            device=device,
+                            dtype=dtype,
+                            requires_grad=True,
+                        )
+                        target = make_target(num_classes, target_shape, ii, device, target_dtype)
+                        yield module_args, module_kwargs, (input, target)
+
+        for module_args, module_kwargs, (input, target) in samples(device=torch.device('cpu'), dtype=dtype):
+            native_module_kwargs = module_kwargs.copy()
+            native_module_kwargs['options'] = None  # use native implementation, no chunking
+
+            torch.manual_seed(1245)
+            loss = nn.LinearCrossEntropyLoss(*module_args, **module_kwargs)
+
+            torch.manual_seed(1245)  # ensures equal linear weights in loss and ref_loss
+            ref_loss = nn.LinearCrossEntropyLoss(*module_args, **native_module_kwargs)
+            ref_input = input.clone().detach().requires_grad_(True)
+
+            out = loss(input, target)
+            ref_out = ref_loss(ref_input, target)
+
+            self.assertEqual(out, ref_out)
+
+            if (module_kwargs.get('options', F.LinearCrossEntropyOptions()).grad_inplace) or dtype != torch.float64:
+                # checking backward directly because gradcheck may
+                # fail when grad_inplace=True or dtype is not float64
+                out.sum().backward()
+                ref_out.sum().backward()
+
+                self.assertEqual(input.grad, ref_input.grad)
+                self.assertEqual(loss.linear.weight.grad, ref_loss.linear.weight.grad)
+            else:
+                torch.autograd.gradcheck(ref_loss, (ref_input, target))
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
     def test_convert_sync_batchnorm(self):

@@ -6790,12 +6790,13 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **
     if not dtype.is_floating_point:
         raise ValueError(f"linear_cross_entropy requires floating point type inputs, got {dtype}")
     reductions = ("mean", "sum", "none")
-
+    LinearCrossEntropyOptions = torch.nn.functional.LinearCrossEntropyOptions
     kwargs_list: list[dict[str, Any]] = [
         {},
         *[dict(reduction=reduction) for reduction in reductions],
         *[dict(weight=None, reduction=reduction) for reduction in reductions],
         dict(ignore_index=1),
+        *[dict(reduction=reduction, options=LinearCrossEntropyOptions()) for reduction in reductions],
     ]
 
     for kwargs, probabilities_target in itertools.product(kwargs_list, (False, True)):

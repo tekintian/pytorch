@@ -1,5 +1,6 @@
 """Functional interface."""
 
+import dataclasses
 import importlib
 import math
 import warnings
@@ -3647,6 +3648,37 @@ def binary_cross_entropy_with_logits(
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class LinearCrossEntropyOptions:
+    """Options for controlling chunking strategy in linear cross
+    entropy operation.
+    """
+
+    grad_inplace: Optional[bool] = False
+    """When True, backward will use inplace multiplication to compute
+    the gradients to save extra storage space but
+    torch.autograd.gradcheck will likely fail and the operation will
+    not be composite compliant.  Default is False.
+    """
+
+    batch_chunk_size: Optional[int] = None
+    """Chunk size along the batches dimension. By default, the
+    chunk size is maximal.
+    """
+
+    def adjust(self, num_batches, in_features, num_classes):
+        """Adjust options to input sizes.
+
+        The method returns a new LinearCrossEntropyOptions object with
+        default chunk sizes adjusted to the actual input sizes.
+        """
+        if self.batch_chunk_size is None:
+            batch_chunk_size = num_batches
+        else:
+            batch_chunk_size = min(self.batch_chunk_size, num_batches)
+        return dataclasses.replace(self, batch_chunk_size=batch_chunk_size)
+
+
 def linear_cross_entropy(
     input: Tensor,
     linear_weight: Tensor,
@@ -3656,13 +3688,14 @@ def linear_cross_entropy(
     reduction: str = "mean",
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
+    options: Optional[LinearCrossEntropyOptions] = None,
 ) -> Tensor:
     r"""Compute the cross entropy loss between inputs, transformed linearly, and target.
 
     ::
       loss = linear_cross_entropy(input, linear_weight, target, **kwargs)
 
-    is equivalent to
+    is equivalent to the following reference implementation of linear_cross_entropy
 
     ::
       logits = linear(input, linear_weight)
@@ -3695,7 +3728,13 @@ def linear_cross_entropy(
             Architecture for Computer Vision
             <https://arxiv.org/abs/1512.00567>`__.
             Default: :math:`0.0`.
-
+        options (LinearCrossEntropyOptions, optional): Specify
+            chunking strategy options, see
+            :class:`~torch.nn.functional.LinearCrossEntropyOptions`
+            for more details. Enabling chunking will decrease the
+            memory usage.  To enable reference implementation of
+            ``linear_cross_entropy``, use `options=None`. Default:
+            ``None``.
     Shape:
         - Input: :math:`(in_features)` or :math:`(N, in_features)`.
         - Linear weight: :math:`(C, d_1, ..., d_K, in_features)`.
@@ -3719,6 +3758,7 @@ def linear_cross_entropy(
           shape of the input. Otherwise, scalar.
 
         where :math:`N` is batch size and :math:`C` is number of classes.
+
     """
     if has_torch_function_variadic(input, linear_weight, target, weight):
         return handle_torch_function(
@@ -3731,18 +3771,76 @@ def linear_cross_entropy(
             ignore_index=ignore_index,
             reduction=reduction,
             label_smoothing=label_smoothing,
+            options=options,
         )
-    num_classes = linear_weight.shape[0]
-    if len(linear_weight.shape) > 2:
-        # linear supports 2-D weights only
-        linear_weight = linear_weight.reshape((-1, linear_weight.shape[-1]))
+
+    out_features = linear_weight.shape[:-2]
+    num_classes = linear_weight.shape[-2]
+    in_features = input.shape[-1]
+    if out_features:
+        linear_weight = linear_weight.reshape(
+            (math.prod(out_features, start=num_classes), in_features)
+        )
+    if (
+        options is not None
+        and reduction in {"mean", "sum"}
+        and label_smoothing == 0.0
+        and target.dtype == torch.int64
+        and not out_features
+    ):
+        if input.dim() == 2:
+            num_batches = input.shape[0]
+            has_batches = True
+        else:
+            num_batches = 1
+            has_batches = False
+        if weight is None:
+            # optimization todo: support unspecified weight in LinearCrossEntropyFunction
+            weight = torch.ones(
+                (num_classes,),
+                device=input.device,
+                dtype=input.dtype,
+                requires_grad=False,
+            )
+        if ignore_index >= 0:
+            weight = weight.clone()
+            weight.narrow(0, ignore_index, 1).zero_()
+        if not has_batches:
+            input = input.unsqueeze(0)
+            target = target.unsqueeze(0)
+        options = options.adjust(num_batches, in_features, num_classes)
+
+        # global import results a likely circular import
+        import torch.nn._linear_cross_entropy as m
+
+        result = m.linear_cross_entropy_chunking(
+            input,
+            linear_weight,
+            target,
+            weight,
+            reduction,
+            label_smoothing,
+            options.batch_chunk_size,
+            options.grad_inplace,
+            input.requires_grad,
+            linear_weight.requires_grad,
+        )[0]
+
+        if not has_batches:
+            result = result.squeeze(0)
+        return result
+
     logits = linear(input, linear_weight)
     # recover logits shape that corresponds to the shape of specified
     # linear_weight:
     if target.dtype.is_floating_point:
         logits_shape = target.shape
     elif target.shape:
-        logits_shape = (target.shape[0], num_classes, *target.shape[1:])
+        if input.dim() == 1:
+            logits_shape = (num_classes, *out_features)
+        else:
+            num_batches = input.shape[0]
+            logits_shape = (num_batches, num_classes, *out_features)
     else:
         logits_shape = (num_classes,)
     logits = logits.reshape(logits_shape)
