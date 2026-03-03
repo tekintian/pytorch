@@ -754,6 +754,9 @@ def copy_default(func, *args, **kwargs):
 register_jagged_func(torch.ops.aten.detach.default, "self: jt_all")(
     jagged_unary_pointwise
 )
+register_jagged_func(torch.ops.aten.alias.default, "self: jt_all")(
+    jagged_unary_pointwise
+)
 
 
 @register_jagged_func(

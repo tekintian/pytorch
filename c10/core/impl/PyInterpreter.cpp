@@ -31,6 +31,11 @@ struct NoopPyInterpreterVTable final : public PyInterpreterVTable {
     PANIC(detach);
   }
 
+  c10::intrusive_ptr<TensorImpl> detach_or_alias_for_save(
+      const TensorImpl* self) const override {
+    PANIC(detach_or_alias_for_save);
+  }
+
   void dispatch(const c10::OperatorHandle& op, torch::jit::Stack* stack)
       const override {
     PANIC(dispatch);

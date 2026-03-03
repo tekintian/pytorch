@@ -502,11 +502,13 @@ c10::intrusive_ptr<TensorImpl> TensorImpl::shallow_copy_and_detach_core(
       !c10::impl::tls_is_dispatch_key_excluded(DispatchKey::Python)) {
     const auto& cur_torch_dispatch_mode_state =
         c10::impl::TorchDispatchModeTLS::get_stack_at(mode_stack_len - 1);
-    r = cur_torch_dispatch_mode_state->pyinterpreter()->detach(this);
+    r = cur_torch_dispatch_mode_state->pyinterpreter()
+            ->detach_or_alias_for_save(this);
   } else if (
       key_set_.has(DispatchKey::Python) &&
       !c10::impl::tls_is_dispatch_key_excluded(DispatchKey::Python)) {
-    r = (pyobj_slot_.load_pyobj_interpreter())->detach(this);
+    r = (pyobj_slot_.load_pyobj_interpreter())
+            ->detach_or_alias_for_save(this);
   }
   if (r) {
     if (!r->is_inference()) {

@@ -335,7 +335,7 @@ struct TORCH_API SparseTensorImpl : public TensorImpl {
       impl->refresh_numel();
       return impl;
     }
-    auto r = interpreter->detach(this);
+    auto r = interpreter->detach_or_alias_for_save(this);
     r->set_version_counter(std::forward<VariableVersion>(version_counter));
     r->set_allow_tensor_metadata_change(allow_tensor_metadata_change);
     return r;
