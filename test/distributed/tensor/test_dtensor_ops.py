@@ -470,6 +470,7 @@ dtensor_fails_no_strategy = {
     xfail("nn.functional.interpolate", "area"),
     xfail("nn.functional.interpolate", "nearest"),
     xfail("nn.functional.interpolate", "nearest-exact"),
+    xfail("nn.functional.linear_cross_entropy"),
     xfail("nn.functional.local_response_norm"),
     xfail("nn.functional.max_pool1d"),
     xfail("nn.functional.max_pool2d"),
