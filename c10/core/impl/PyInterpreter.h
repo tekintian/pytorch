@@ -142,6 +142,15 @@ struct C10_API PyInterpreterVTable {
   virtual c10::intrusive_ptr<TensorImpl> detach(
       const TensorImpl* self) const = 0;
 
+  // Like detach(), but dispatches aten.alias instead of aten.detach when
+  // building a traced graph (PROXY mode active). This avoids recording detach
+  // nodes that would block gradient flow when the graph is replayed for
+  // higher-order differentiation. Falls back to aten.detach when not tracing,
+  // to prevent reference cycles in autograd's save-for-backward.
+  // See https://github.com/pytorch/pytorch/issues/175477
+  virtual c10::intrusive_ptr<TensorImpl> detach_or_alias_for_save(
+      const TensorImpl* self) const = 0;
+
   // Invoke the Python boxed fallback dispatch to go back into Python
   virtual void dispatch(const c10::OperatorHandle& op, torch::jit::Stack* stack)
       const = 0;

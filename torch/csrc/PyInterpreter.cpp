@@ -1,5 +1,6 @@
 #include <ATen/core/PythonFallbackKernel.h>
 #include <ATen/core/PythonOpRegistrationTrampoline.h>
+#include <c10/core/impl/TorchDispatchModeTLS.h>
 #include <torch/csrc/PyInterpreter.h>
 #include <torch/csrc/THP.h>
 #include <torch/csrc/autograd/generated/VariableType.h>
@@ -52,6 +53,9 @@ struct ConcretePyInterpreterVTable final
   // TODO: Need to make this work for StorageImpl too. I imagine I'll want to
   // operate upon a PyObjectSlot rather than a TensorImpl
   c10::intrusive_ptr<c10::TensorImpl> detach(
+      const c10::TensorImpl* self) const override;
+
+  c10::intrusive_ptr<c10::TensorImpl> detach_or_alias_for_save(
       const c10::TensorImpl* self) const override;
 
   void dispatch(const c10::OperatorHandle& op, torch::jit::Stack* stack)
@@ -413,6 +417,48 @@ c10::intrusive_ptr<c10::TensorImpl> ConcretePyInterpreterVTable::detach(
   TORCH_CHECK(
       THPVariable_Check(out.ptr()),
       "detach returned invalid type ",
+      py::detail::get_fully_qualified_tp_name(Py_TYPE(out.ptr())),
+      ", expected Tensor");
+  const at::Tensor& res_t = THPVariable_Unpack(out.ptr());
+  return res_t.getIntrusivePtr();
+}
+
+c10::intrusive_ptr<c10::TensorImpl>
+ConcretePyInterpreterVTable::detach_or_alias_for_save(
+    const c10::TensorImpl* self) const {
+  // When tracing (PROXY mode active), dispatch aten.alias to preserve gradient
+  // flow in the traced graph. Otherwise dispatch aten.detach to prevent
+  // reference cycles in autograd's save-for-backward.
+  // See https://github.com/pytorch/pytorch/issues/175477
+  bool use_alias =
+      c10::impl::TorchDispatchModeTLS::get_mode(
+          c10::impl::TorchDispatchModeKey::PROXY)
+          .has_value();
+
+  pybind11::gil_scoped_acquire gil;
+  at::impl::MaybeSetTLSOnEntryGuard guard;
+
+  py::object op = use_alias
+      ? py::module::import("torch")
+            .attr("ops")
+            .attr("aten")
+            .attr("alias")
+            .attr("default")
+      : py::module::import("torch")
+            .attr("ops")
+            .attr("aten")
+            .attr("detach")
+            .attr("default");
+
+  auto out = torchDispatchFromTensorImpl(
+      self,
+      use_alias ? "alias" : "detach",
+      op.ptr(),
+      "torch.ops.aten");
+
+  TORCH_CHECK(
+      THPVariable_Check(out.ptr()),
+      "detach_or_alias_for_save returned invalid type ",
       py::detail::get_fully_qualified_tp_name(Py_TYPE(out.ptr())),
       ", expected Tensor");
   const at::Tensor& res_t = THPVariable_Unpack(out.ptr());

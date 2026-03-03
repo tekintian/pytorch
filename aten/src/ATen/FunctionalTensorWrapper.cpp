@@ -432,7 +432,8 @@ c10::intrusive_ptr<TensorImpl> FunctionalTensorWrapper::shallow_copy_and_detach_
     bool allow_tensor_metadata_change) const {
   if (key_set_.has(DispatchKey::Python) &&
       !c10::impl::tls_is_dispatch_key_excluded(DispatchKey::Python)) {
-    auto r = pyobj_slot_.load_pyobj_interpreter()->detach(this);
+    auto r = pyobj_slot_.load_pyobj_interpreter()
+                 ->detach_or_alias_for_save(this);
     if (r) {
       r->set_version_counter(std::forward<VariableVersion>(version_counter));
       r->set_allow_tensor_metadata_change(allow_tensor_metadata_change);
