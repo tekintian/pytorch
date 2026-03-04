@@ -7212,7 +7212,13 @@ Tensor _to_copy_backward(
     grad = c10::MaybeOwned<at::Tensor>::owned(at::real(grad_));
   }
 
-  return grad->to(self_options, /*non_blocking=*/false, /*copy=*/false);
+  // Skip dtype cast — the engine's validate_outputs handles dtype via
+  // grad_dtype, avoiding redundant casts in mixed precision
+  // (e.g. bf16→f32→bf16 becomes a no-op).
+  return grad->to(
+      self_options.dtype(grad->scalar_type()),
+      /*non_blocking=*/false,
+      /*copy=*/false);
 }
 
 std::tuple<Tensor, Tensor> index_reduce_backward(
