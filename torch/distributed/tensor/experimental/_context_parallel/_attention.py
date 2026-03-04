@@ -17,6 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import distribute_tensor, DTensor, Shard
+from torch.distributed.tensor._dtensor_spec import DTensorSpec
 from torch.distributed.tensor.parallel import ParallelStyle
 from torch.nn.attention.flex_attention import (
     _mask_mod_signature,
@@ -656,7 +657,7 @@ def _templated_ring_attention_backward(
 
 
 def _scaled_dot_product_ring_flash_attention(
-    mesh: DeviceMesh,
+    group: dist.ProcessGroup,
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -671,7 +672,6 @@ def _scaled_dot_product_ring_flash_attention(
 
     # TODO: remove this hardcoding
     seq_dim = 2
-    group = mesh.get_group()
     return _templated_ring_attention(
         group,
         seq_dim,
@@ -686,7 +686,7 @@ def _scaled_dot_product_ring_flash_attention(
 
 
 def _scaled_dot_product_ring_efficient_attention(
-    mesh: DeviceMesh,
+    group: dist.ProcessGroup,
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -706,7 +706,6 @@ def _scaled_dot_product_ring_efficient_attention(
 
     # TODO: remove this hardcoding
     seq_dim = 2
-    group = mesh.get_group()
     return _templated_ring_attention(
         group,
         seq_dim,
@@ -723,7 +722,7 @@ def _scaled_dot_product_ring_efficient_attention(
 
 
 def _scaled_dot_product_ring_cudnn_attention(
-    mesh: DeviceMesh,
+    group: dist.ProcessGroup,
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -744,7 +743,6 @@ def _scaled_dot_product_ring_cudnn_attention(
 
     # TODO: remove this hardcoding
     seq_dim = 2
-    group = mesh.get_group()
     return _templated_ring_attention(
         group,
         seq_dim,
@@ -762,7 +760,7 @@ def _scaled_dot_product_ring_cudnn_attention(
 
 
 def _scaled_dot_product_ring_flash_attention_backward(
-    mesh: DeviceMesh,
+    group: dist.ProcessGroup,
     grad_out: torch.Tensor,
     query: torch.Tensor,
     key: torch.Tensor,
@@ -782,7 +780,6 @@ def _scaled_dot_product_ring_flash_attention_backward(
 ) -> tuple[torch.Tensor, ...]:
     # TODO: remove this hardcoding
     seq_dim = 2
-    group = mesh.get_group()
     return _templated_ring_attention_backward(
         group,
         seq_dim,
@@ -807,7 +804,7 @@ def _scaled_dot_product_ring_flash_attention_backward(
 
 
 def _scaled_dot_product_ring_efficient_attention_backward(
-    mesh: DeviceMesh,
+    group: dist.ProcessGroup,
     grad_out: torch.Tensor,
     query: torch.Tensor,
     key: torch.Tensor,
@@ -825,7 +822,6 @@ def _scaled_dot_product_ring_efficient_attention_backward(
 ) -> tuple[torch.Tensor, ...]:
     # TODO: remove this hardcoding
     seq_dim = 2
-    group = mesh.get_group()
     return _templated_ring_attention_backward(
         group,
         seq_dim,
@@ -848,7 +844,7 @@ def _scaled_dot_product_ring_efficient_attention_backward(
 
 
 def _scaled_dot_product_ring_cudnn_attention_backward(
-    mesh: DeviceMesh,
+    group: dist.ProcessGroup,
     grad_out: torch.Tensor,
     query: torch.Tensor,
     key: torch.Tensor,
@@ -869,7 +865,6 @@ def _scaled_dot_product_ring_cudnn_attention_backward(
 ) -> tuple[torch.Tensor, ...]:
     # TODO: remove this hardcoding
     seq_dim = 2
-    group = mesh.get_group()
     return _templated_ring_attention_backward(
         group,
         seq_dim,
@@ -914,6 +909,36 @@ def _sdpa_handler(
     if output_sharding.needs_redistribute:
         raise AssertionError("inputs need to be redistributed")
 
+    # Ring attention needs the CP process group. For a 1D mesh this is just
+    # mesh.get_group(). For a multi-dim mesh (e.g. [cp, tp]), find the CP
+    # dimension — the one with Shard(seq_dim=2) — and get its group.
+
+    # We assume Shard(2) dimension to be the CP dimension. While this is True,
+    # the hard-coded logic is still hacky. Unfortunately, there is not eay way
+    # to get the CP mesh elegantly as this is on the DTensor dispatcher path,
+    # not on the CP API path.
+    mesh = op_info.compute_mesh
+    mesh_dim_names = mesh.mesh_dim_names
+    cp_mesh_dim: int | str | None = None
+    if mesh.ndim > 1 and mesh_dim_names is not None:
+        for spec in op_info.flat_args_schema:
+            if not isinstance(spec, DTensorSpec):
+                continue
+
+            for dim_idx, p in enumerate(spec.placements):
+                if p == Shard(2):
+                    if cp_mesh_dim is None:
+                        cp_mesh_dim = mesh_dim_names[dim_idx]
+                    if cp_mesh_dim != mesh_dim_names[dim_idx]:
+                        raise AssertionError(
+                            "Find multiple mesh dimensions that shard on sequence dim."
+                        )
+
+            if cp_mesh_dim is None:
+                raise AssertionError("Cannot find correct cp_mesh_dim.")
+            break
+    group = mesh.get_group(cp_mesh_dim)
+
     call_maps: dict[torch._ops.OpOverload, Callable] = {
         aten._scaled_dot_product_flash_attention.default: _scaled_dot_product_ring_flash_attention,
         aten._scaled_dot_product_efficient_attention.default: _scaled_dot_product_ring_efficient_attention,
@@ -924,7 +949,7 @@ def _sdpa_handler(
     }
     if op_call in call_maps:
         local_results = call_maps[op_call](
-            op_info.compute_mesh,
+            group,
             *op_info.local_args,  # type: ignore[arg-type]
             **op_info.local_kwargs,  # type: ignore[arg-type]
         )
@@ -1323,16 +1348,51 @@ class _ContextParallel(ParallelStyle):
         self,
         seq_dim: int,
         attention_type: AttentionType,
+        tensor_mesh: DeviceMesh | None = None,
     ) -> None:
         super().__init__()
         self.seq_dim = seq_dim
         self.attention_type = attention_type
+        self.tensor_mesh = tensor_mesh
+        self._combined_mesh: DeviceMesh | None = None
+        self._flex_original_placements: tuple | None = None
+        self._flex_original_mesh: DeviceMesh | None = None
+
+    def _tensor_mesh_contains_cp_mesh(self, cp_mesh: DeviceMesh) -> bool:
+        """Check if tensor_mesh contains the CP dimension (multi-dim DTensor case)."""
+        tensor_mesh = self.tensor_mesh
+        if tensor_mesh is None:
+            return False
+
+        cp_names = cp_mesh.mesh_dim_names
+        tensor_names = tensor_mesh.mesh_dim_names
+        if cp_names is None or tensor_names is None:
+            return False
+        return cp_names[0] in tensor_names
+
+    def _get_cp_dim_index(self, cp_mesh: DeviceMesh) -> int:
+        """Return the index of the CP dimension within tensor_mesh."""
+        tensor_mesh = self.tensor_mesh
+        cp_names = cp_mesh.mesh_dim_names
+        tensor_names = tensor_mesh.mesh_dim_names if tensor_mesh is not None else None
+        if cp_names is None or tensor_names is None:
+            raise RuntimeError(
+                "mesh_dim_names must be set on both cp_mesh and tensor_mesh"
+            )
+        return tensor_names.index(cp_names[0])
 
     def _apply(self, module: nn.Module, mesh: DeviceMesh) -> nn.Module:
+        # Precompute combined mesh for Case 2 (tensor_mesh doesn't contain cp_mesh)
+        if self.tensor_mesh is not None and not self._tensor_mesh_contains_cp_mesh(
+            mesh
+        ):
+            self._combined_mesh = DeviceMesh._concatenate([mesh, self.tensor_mesh])
+
         if self.attention_type == self.AttentionType.FLEX:
             module.register_forward_pre_hook(
                 partial(self.flex_input_fn, mesh=mesh), with_kwargs=True
             )
+            module.register_forward_hook(partial(self.flex_output_fn, mesh=mesh))
             return module
         elif self.attention_type == self.AttentionType.SDPA:
             module.register_forward_pre_hook(
@@ -1363,8 +1423,37 @@ class _ContextParallel(ParallelStyle):
         if not isinstance(value, torch.Tensor):
             raise AssertionError
 
-        key = key.contiguous()
-        value = value.contiguous()
+        # Strip DTensor wrappers — flex needs local tensors for allgather.
+        # Store original placements/mesh so flex_output_fn can restore them.
+        self._flex_original_placements: tuple | None = None
+        self._flex_original_mesh: DeviceMesh | None = None
+        for i, tensor in enumerate(args_list[: len(expected_arg_names)]):
+            if isinstance(tensor, DTensor):
+                if self._flex_original_placements is None:
+                    if (
+                        self.tensor_mesh is not None
+                        and self._tensor_mesh_contains_cp_mesh(mesh)
+                    ):
+                        # Case 1: DTensor containing CP dim / full dtensor.
+                        # Store non-CP placements for output restoration.
+                        cp_idx = self._get_cp_dim_index(mesh)
+                        self._flex_original_placements = tuple(
+                            p for j, p in enumerate(tensor.placements) if j != cp_idx
+                        )
+                        self._flex_original_mesh = self.tensor_mesh
+                    elif self.tensor_mesh is not None:
+                        # Case 2: Legacy TP-only DTensor.
+                        self._flex_original_placements = tuple(tensor.placements)
+                        self._flex_original_mesh = self.tensor_mesh
+                    else:
+                        raise AssertionError(
+                            f"Received DTensor but no tensor_mesh configured. "
+                            f"Got placements {tensor.placements} on {tensor.device_mesh}"
+                        )
+                args_list[i] = tensor.to_local()
+
+        key = args_list[1].contiguous()
+        value = args_list[2].contiguous()
 
         global_key, global_value = flex_cp_allgather(
             key, value, self.seq_dim, c10d._get_process_group_name(mesh.get_group())
@@ -1377,6 +1466,27 @@ class _ContextParallel(ParallelStyle):
         args_list = args_list[: len(args)]
         return tuple(args_list), kwargs
 
+    def flex_output_fn(
+        self, module: nn.Module | None, inputs: Any, outputs: Any, mesh: DeviceMesh
+    ) -> Any:
+        # Flex outputs are plain tensors. Re-wrap using the placements stored
+        # by flex_input_fn if we had DTensor inputs.
+        if self._flex_original_placements is not None:
+            new_outputs = []
+            for output in [outputs] if isinstance(outputs, torch.Tensor) else outputs:
+                if isinstance(output, torch.Tensor):
+                    output = DTensor.from_local(
+                        output,
+                        self._flex_original_mesh,
+                        list(self._flex_original_placements),
+                        run_check=False,
+                    )
+                new_outputs.append(output)
+            if isinstance(outputs, torch.Tensor):
+                return new_outputs[0]
+            return tuple(new_outputs)
+        return outputs
+
     def sdpa_input_fn(
         self,
         module: nn.Module | None,
@@ -1384,16 +1494,55 @@ class _ContextParallel(ParallelStyle):
         kwargs: dict[str, Any],
         mesh: DeviceMesh,
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-        placement = [Shard(self.seq_dim)]
         all_args = []
 
         for arg in itertools.chain(args, kwargs.values()):
             if isinstance(arg, torch.Tensor):
                 if isinstance(arg, DTensor):
-                    if arg._spec.placements != placement:
-                        raise AssertionError
+                    if (
+                        self.tensor_mesh is not None
+                        and self._tensor_mesh_contains_cp_mesh(mesh)
+                    ):
+                        # Case 1: tensor_mesh contains CP dim / full dtensor.
+                        # Verify the CP placement is Shard(seq_dim) and pass
+                        # through.
+                        cp_idx = self._get_cp_dim_index(mesh)
+                        if arg.placements[cp_idx] != Shard(self.seq_dim):
+                            raise AssertionError(
+                                f"Expected Shard({self.seq_dim}) on CP dim "
+                                f"(index {cp_idx}), got {arg.placements}"
+                            )
+                    elif self._combined_mesh is not None:
+                        # Case 2: Legacy TP-only — strip TP wrapper, create 2D
+                        # DTensor on combined [cp, tensor_mesh] mesh.
+                        if arg.device_mesh != self.tensor_mesh:
+                            raise AssertionError(
+                                f"Expected DTensor on tensor_mesh "
+                                f"{self.tensor_mesh}, got {arg.device_mesh}"
+                            )
+                        original_placements = list(arg.placements)
+                        arg = DTensor.from_local(
+                            arg.to_local(),
+                            self._combined_mesh,
+                            [Shard(self.seq_dim)] + original_placements,
+                            run_check=False,
+                        )
+                    else:
+                        raise AssertionError(
+                            f"Received a DTensor but no tensor_mesh was "
+                            f"configured. Got placements {arg.placements} "
+                            f"on mesh {arg.device_mesh}"
+                        )
                 else:
-                    arg = DTensor.from_local(arg, mesh, placement, run_check=False)
+                    # Plain tensor — Same as Case 2. But users do to_local.
+                    if self._combined_mesh is not None or self.tensor_mesh is not None:
+                        raise AssertionError(
+                            "Got plan torch.Tensor but tensor_mesh is specified"
+                        )
+                    else:
+                        arg = DTensor.from_local(
+                            arg, mesh, [Shard(self.seq_dim)], run_check=False
+                        )
 
             all_args.append(arg)
 
@@ -1406,7 +1555,25 @@ class _ContextParallel(ParallelStyle):
     ) -> Any:
         new_outputs = []
         for output in [outputs] if isinstance(outputs, torch.Tensor) else outputs:
-            output = output.to_local() if isinstance(output, DTensor) else output
+            if isinstance(output, DTensor):
+                if self.tensor_mesh is not None and self._tensor_mesh_contains_cp_mesh(
+                    mesh
+                ):
+                    # Case 1: Already a multi-dim DTensor on tensor_mesh, pass through.
+                    pass
+                elif self._combined_mesh is not None:
+                    # Case 2: Output is on combined mesh. Extract non-CP placements
+                    # and re-wrap as DTensor on tensor_mesh.
+                    non_cp_placements = list(output.placements[1:])
+                    output = DTensor.from_local(
+                        output.to_local(),
+                        self.tensor_mesh,
+                        non_cp_placements,
+                        run_check=False,
+                    )
+                else:
+                    # Case 3: Plain CP — just unwrap to local.
+                    output = output.to_local()
             new_outputs.append(output)
 
         if isinstance(outputs, torch.Tensor):
