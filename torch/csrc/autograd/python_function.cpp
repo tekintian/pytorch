@@ -154,6 +154,12 @@ namespace torch::autograd {
 // from C++'s Node::apply to a Python method "apply".
 // NOLINTNEXTLINE(*-rvalue-reference*)
 auto PyNode::apply(variable_list&& inputs) -> variable_list {
+  // see Note [Thread Safety on Autograd Node]
+  std::optional<pybind11::gil_scoped_release> no_gil;
+  if (PyGILState_Check()) {
+    no_gil.emplace();
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
   pybind11::gil_scoped_acquire gil;
   at::OptionalDeviceGuard _device_guard;
   THPFunction* py_fn = (THPFunction*)obj;
@@ -205,6 +211,12 @@ auto PyNode::apply(variable_list&& inputs) -> variable_list {
 auto PyNode::apply_with_saved_impl(
     const variable_list& inputs,
     const SwapSavedVariables& saved) -> variable_list {
+  // see Note [Thread Safety on Autograd Node]
+  std::optional<pybind11::gil_scoped_release> no_gil;
+  if (PyGILState_Check()) {
+    no_gil.emplace();
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
   pybind11::gil_scoped_acquire gil;
   at::OptionalDeviceGuard _device_guard;
   THPFunction* py_fn = (THPFunction*)obj;

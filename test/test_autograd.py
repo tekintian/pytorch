@@ -8353,6 +8353,62 @@ for shape in [(1,), ()]:
         with self.assertRaisesRegex(RuntimeError, "can only be accessed once"):
             y.sum().backward()
 
+    def test_custom_function_concurrent_backward(self):
+        # Test that the mutex on PyNode::apply serializes concurrent backward
+        # calls. time.sleep releases the GIL, so without the mutex another
+        # thread could enter backward on the same node concurrently.
+        import threading
+        import time
+
+        concurrent = 0
+        max_concurrent = 0
+        count_lock = threading.Lock()
+
+        class SlowMul(Function):
+            @staticmethod
+            def forward(ctx, a, b):
+                ctx.save_for_backward(a, b)
+                return a * b
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                nonlocal concurrent, max_concurrent
+                a, b = ctx.saved_tensors
+                with count_lock:
+                    concurrent += 1
+                    max_concurrent = max(max_concurrent, concurrent)
+                time.sleep(0.2)
+                with count_lock:
+                    concurrent -= 1
+                return grad_output * b, grad_output * a
+
+        a = torch.randn(100, requires_grad=True)
+        b = torch.randn(100, requires_grad=True)
+        out = SlowMul.apply(a, b)
+        loss = out.sum()
+
+        barrier = threading.Barrier(4)
+        errors = []
+
+        def run_backward():
+            try:
+                barrier.wait()
+                loss.backward(retain_graph=True)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=run_backward) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [])
+        # The mutex serializes calls: at most one thread in backward at a time.
+        # Without the mutex, time.sleep releases the GIL, allowing other
+        # threads to enter backward concurrently (max_concurrent > 1).
+        self.assertEqual(max_concurrent, 1)
+
     def test_autograd_node_isinstance(self):
         # Node is a "virtual" base class of codegen'd nodes. This means that
         # isinstance and issubclass are overridden, but mro is unchanged
