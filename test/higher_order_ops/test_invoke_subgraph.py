@@ -3103,7 +3103,6 @@ class GraphModule(torch.nn.Module):
 
 @skipIfTorchDynamo("Not a torch._dynamo test")
 class TestInvokeSubgraphReuse(TestCase):
-    @torch._dynamo.config.patch(invoke_subgraph_reuse=True)
     def test_subgraph_reuse_basic(self):
         @nested_compile_region()
         def gn(x, y):
@@ -3129,7 +3128,6 @@ class TestInvokeSubgraphReuse(TestCase):
         self.assertEqual(x.grad, x_clone.grad)
         self.assertEqual(y.grad, y_clone.grad)
 
-    @torch._dynamo.config.patch(invoke_subgraph_reuse=True)
     def test_subgraph_reuse_skips_tracing(self):
         @nested_compile_region()
         def gn(x, y):
@@ -3161,7 +3159,6 @@ class TestInvokeSubgraphReuse(TestCase):
 
         self.assertEqual(call_count, 1)
 
-    @torch._dynamo.config.patch(invoke_subgraph_reuse=True)
     def test_subgraph_reuse_different_shapes(self):
         @nested_compile_region()
         def gn(x):
@@ -3194,7 +3191,6 @@ class TestInvokeSubgraphReuse(TestCase):
         self.assertEqual(call_count, 2)
         self.assertEqual(res, fn(x, y))
 
-    @torch._dynamo.config.patch(invoke_subgraph_reuse=True)
     def test_subgraph_reuse_module(self):
         class Mod(torch.nn.Module):
             def __init__(self):
@@ -3225,7 +3221,6 @@ class TestInvokeSubgraphReuse(TestCase):
         self.assertEqual(x.grad, x_clone.grad)
         self.assertEqual(y.grad, y_clone.grad)
 
-    @torch._dynamo.config.patch(invoke_subgraph_reuse=True)
     def test_subgraph_reuse_free_function_with_module_arg(self):
         class Block(torch.nn.Module):
             def __init__(self, scale):
@@ -3275,7 +3270,6 @@ class TestInvokeSubgraphReuse(TestCase):
         self.assertEqual(ref, res)
         self.assertEqual(x.grad, x_clone.grad)
 
-    @torch._dynamo.config.patch(invoke_subgraph_reuse=True)
     def test_subgraph_reuse_tuple_output(self):
         @nested_compile_region()
         def gn(x, y):
@@ -3301,6 +3295,85 @@ class TestInvokeSubgraphReuse(TestCase):
         self.assertEqual(ref[1], res[1])
         self.assertEqual(x.grad, x_clone.grad)
         self.assertEqual(y.grad, y_clone.grad)
+
+    def test_subgraph_reuse_mutated_attribute(self):
+        """Reuse must be skipped when a captured attribute is mutated between calls."""
+
+        class Mod(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.c = 5
+
+            @nested_compile_region()
+            def forward(self, x):
+                return x * self.c
+
+        mod = Mod()
+
+        def fn(x):
+            a = mod(x)
+            mod.c = 10
+            b = mod(x)
+            return a + b
+
+        x = torch.randn(8)
+        # Eager: first call uses c=5, then c is set to 10, second call uses c=10.
+        # Result = x*5 + x*10 = x*15.
+        mod.c = 5
+        ref = fn(x)
+        self.assertEqual(ref, x * 15)
+
+        # Compiled should produce the same result. If reuse incorrectly
+        # fires, both calls would use c=5, giving x*10 instead of x*15.
+        mod.c = 5
+        res = torch.compile(fn, backend="aot_eager", fullgraph=True)(x)
+        self.assertEqual(ref, res)
+
+    def test_subgraph_reuse_pre_existing_attr_guard(self):
+        """Reuse must account for guards installed before the subgraph trace.
+
+        Using ``block.c`` in a conditional before the nested compile region
+        call installs an EQUALS_MATCH guard on ``block.c`` before
+        guards_before is snapshotted.  When the subgraph trace accesses the
+        same attribute, Guard deduplication prevents a second copy from being
+        added, so the guard won't appear in the delta.  And because
+        arg_sources only contains the module source (not the attr source),
+        get_guards_for_source won't find it either.  Without proper handling,
+        the second call with a different module (different ``c``) would
+        incorrectly reuse the first cached subgraph.
+        """
+
+        class Block(torch.nn.Module):
+            def __init__(self, c):
+                super().__init__()
+                self.c = c
+
+        @nested_compile_region()
+        def apply_block(mod, x):
+            return x * mod.c
+
+        block1 = Block(5)
+        block2 = Block(10)
+
+        def fn(x):
+            # The conditional installs EQUALS_MATCH on block1.c *before*
+            # the subgraph trace snapshots guards_before.
+            if block1.c == 5:
+                a = apply_block(block1, x)
+            else:
+                a = x
+            if block2.c == 10:
+                b = apply_block(block2, x)
+            else:
+                b = x
+            return a + b
+
+        x = torch.randn(8)
+        ref = fn(x)
+        self.assertEqual(ref, x * 5 + x * 10)
+
+        res = torch.compile(fn, backend="aot_eager", fullgraph=True)(x)
+        self.assertEqual(ref, res)
 
 
 @skipIfTorchDynamo("Not a torch._dynamo test")

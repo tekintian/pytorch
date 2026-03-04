@@ -761,7 +761,7 @@ class HopSubgraphCache:
 
 
 @dataclass
-class ReuseEntry:
+class InvokeSubgraphReuseEntry:
     body_name: str
     body_gmod: Any  # GraphModule
     config: Any  # NestedCompileRegionOptions | None
@@ -782,7 +782,7 @@ class ReuseEntry:
 
 
 @dataclass
-class ReuseCondition:
+class InvokeSubgraphReuseCondition:
     # Per flattened input VT: (tag, metadata).
     #   ("tensor", (shape, stride, dtype, device, requires_grad))
     #   ("symnode", python_type)
@@ -816,8 +816,8 @@ class InvokeSubgraphCache(HopSubgraphCache):
         ] = {}  # Maps identifier -> set of effect types
         # fn_id → list of (condition, cache_entry) pairs. Walked linearly
         # on lookup; first matching condition wins.
-        self.auto_subgraph_cache: dict[
-            int, list[tuple[ReuseCondition, ReuseEntry]]
+        self.subgraph_reuse_cache: dict[
+            int, list[tuple[InvokeSubgraphReuseCondition, InvokeSubgraphReuseEntry]]
         ] = defaultdict(list)
 
     def add_dynamo_installed_submodule(self, fn_id: int, identifier: str) -> None:
@@ -876,17 +876,19 @@ class InvokeSubgraphCache(HopSubgraphCache):
     def add_reuse_entry(
         self,
         fn_id: int,
-        condition: ReuseCondition,
-        entry: ReuseEntry,
+        condition: InvokeSubgraphReuseCondition,
+        entry: InvokeSubgraphReuseEntry,
     ) -> None:
-        self.auto_subgraph_cache[fn_id].append((condition, entry))
+        self.subgraph_reuse_cache[fn_id].append((condition, entry))
 
     def find_reuse_entry(
         self,
         fn_id: int,
-        evaluator: Callable[[ReuseCondition, ReuseEntry], bool],
-    ) -> ReuseEntry | None:
-        entries = self.auto_subgraph_cache.get(fn_id, [])
+        evaluator: Callable[
+            [InvokeSubgraphReuseCondition, InvokeSubgraphReuseEntry], bool
+        ],
+    ) -> InvokeSubgraphReuseEntry | None:
+        entries = self.subgraph_reuse_cache.get(fn_id, [])
         for i, (condition, entry) in enumerate(entries):
             if evaluator(condition, entry):
                 # MRU: move the hit entry to the front for faster future lookups

@@ -852,11 +852,6 @@ _custom_ops_profile: Any | None = None
 # For testing only!
 enable_invoke_subgraph_regional_compile: bool = False
 
-# Automatically reuse invoke_subgraph traces without requiring
-# is_pure annotation. Uses guard-based condition checking with a linked
-# list of reuse entries per function.
-invoke_subgraph_reuse: bool = False
-
 # When True, run a post-tracing pass that inlines all invoke_subgraph HOPs
 # back into the parent graph, producing a flat FX graph. Useful when
 # downstream compilers (like vllm-compile) don't support HOPs or prefer a
