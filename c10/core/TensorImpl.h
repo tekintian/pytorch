@@ -16,6 +16,7 @@
 #include <c10/core/SymIntArrayRef.h>
 #include <c10/core/SymbolicShapeMeta.h>
 #include <c10/core/WrapDimMinimal.h>
+#include <c10/core/SafePyObject.h>
 #include <c10/core/impl/PyObjectSlot.h>
 #include <c10/core/impl/SizesAndStrides.h>
 #include <c10/macros/Export.h>
@@ -237,12 +238,25 @@ struct C10_API BackendMeta : intrusive_ptr_target {
   }
 };
 
+struct C10_API FakeTensorMode {
+  std::shared_ptr<c10::SafePyObject> shape_env_;
+  std::shared_ptr<c10::SafePyObject> fake_tensor_converter_;
+
+  FakeTensorMode(
+      std::shared_ptr<c10::SafePyObject> shape_env,
+      std::shared_ptr<c10::SafePyObject> converter)
+      : shape_env_(std::move(shape_env)),
+        fake_tensor_converter_(std::move(converter)) {}
+};
+
 struct C10_API ExtraMeta {
   std::unique_ptr<c10::SymbolicShapeMeta> symbolic_shape_meta_ = nullptr;
   std::unique_ptr<c10::NamedTensorMetaInterface> named_tensor_meta_ = nullptr;
   intrusive_ptr<c10::BackendMeta> backend_meta_ = nullptr;
   std::optional<std::string> custom_data_ptr_error_msg_ = std::nullopt;
   std::optional<std::string> custom_storage_error_msg_ = std::nullopt;
+  std::optional<c10::Device> fake_device_ = std::nullopt;
+  std::shared_ptr<FakeTensorMode> fake_tensor_mode_ = nullptr;
 
   ExtraMeta() = default;
   ~ExtraMeta() = default;
@@ -263,6 +277,8 @@ struct C10_API ExtraMeta {
     if (other.custom_storage_error_msg_) {
       custom_storage_error_msg_ = other.custom_storage_error_msg_;
     }
+    fake_device_ = other.fake_device_;
+    fake_tensor_mode_ = other.fake_tensor_mode_;
   }
   ExtraMeta& operator=(const ExtraMeta& other) = delete;
   ExtraMeta(ExtraMeta&& other) = delete;
@@ -1131,6 +1147,10 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
     return device_opt_.has_value() && device_opt_->type() == kMeta;
   }
 
+  bool is_fake() const {
+    return key_set_.has(DispatchKey::Fake);
+  }
+
   bool is_cpu() const {
     // NB: This method is not virtual and avoid dispatches for performance
     // reasons.
@@ -1427,6 +1447,26 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
   inline bool is_conj() const {
     constexpr auto conjugate_ks = DispatchKeySet(DispatchKey::Conjugate);
     return key_set_.has_all(conjugate_ks);
+  }
+
+  // Transmute this meta tensor into a fake tensor. The underlying device_opt_
+  // stays as Meta for dispatch routing, while the fake device is stored in
+  // ExtraMeta and returned by device() via the device_policy_ mechanism.
+  void set_fake_device(c10::Device fake_device) {
+    TORCH_CHECK(fake_device.type() != c10::DeviceType::Meta,
+        "FakeTensor does not support meta device");
+    get_extra_meta().fake_device_ = fake_device;
+    key_set_ = key_set_.add(DispatchKey::Fake);
+    set_custom_device(true);
+  }
+
+  void set_fake_tensor_mode(std::shared_ptr<FakeTensorMode> mode) {
+    get_extra_meta().fake_tensor_mode_ = std::move(mode);
+  }
+
+  std::shared_ptr<FakeTensorMode> fake_tensor_mode() const {
+    if (!extra_meta_) return nullptr;
+    return extra_meta_->fake_tensor_mode_;
   }
 
   /**
