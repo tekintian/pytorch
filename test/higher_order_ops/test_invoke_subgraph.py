@@ -3388,9 +3388,9 @@ class TestInvokeSubgraphReuse(TestCase):
         submod2 = Block(5)  # same initial .c as submod1
 
         def fn(x):
-            a = submod1(x)     # traces with c=5
-            submod2.c = 10     # mutate submod2.c
-            b = submod2(x)     # must NOT reuse the c=5 subgraph
+            a = submod1(x)  # traces with c=5
+            submod2.c = 10  # mutate submod2.c
+            b = submod2(x)  # must NOT reuse the c=5 subgraph
             return a + b
 
         x = torch.randn(8)
@@ -3514,6 +3514,48 @@ class TestInvokeSubgraphReuse(TestCase):
             res = torch.compile(fn, backend="aot_eager", fullgraph=True)(x)
 
         self.assertEqual(ref, res)
+        self.assertEqual(call_count, 1)
+
+    def test_subgraph_reuse_synthetic_source_different_args(self):
+        """Reuse with different opaque object ctor args per invocation.
+
+        When different invocations construct opaque objects with different
+        args (e.g. HoistedString("double") vs HoistedString("square")),
+        stamp-out must use source replacement to resolve the new ctor args.
+        """
+        from test_opaque_obj_v2 import HoistedString, op_with_string
+
+        @nested_compile_region
+        def gn(x, label):
+            return op_with_string(x, HoistedString(label))
+
+        labels = ["double", "square", "double"]
+
+        def fn(x):
+            for label in labels:
+                x = gn(x, label)
+            return x
+
+        x = torch.randn(8)
+        ref = fn(x)
+
+        call_count = 0
+        orig_speculate = torch._dynamo.variables.higher_order_ops.speculate_subgraph_with_auto_output_flattening
+
+        def counting_speculate(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return orig_speculate(*args, **kwargs)
+
+        with mock.patch.object(
+            torch._dynamo.variables.higher_order_ops,
+            "speculate_subgraph_with_auto_output_flattening",
+            counting_speculate,
+        ):
+            res = torch.compile(fn, backend="aot_eager", fullgraph=True)(x)
+
+        self.assertEqual(ref, res)
+        # Only 1 trace — the other 2 should be stamp-outs
         self.assertEqual(call_count, 1)
 
 

@@ -883,8 +883,19 @@ class InvokeSubgraphCache(HopSubgraphCache):
         fn_id: int,
         condition: InvokeSubgraphReuseCondition,
         entry: InvokeSubgraphReuseEntry,
+        max_reuse_entries: int = 8,
     ) -> None:
-        self.subgraph_reuse_cache[fn_id].append((condition, entry))
+        entries = self.subgraph_reuse_cache[fn_id]
+        if len(entries) >= max_reuse_entries:
+            raise RuntimeError(
+                f"invoke_subgraph: exceeded maximum reuse entries "
+                f"({max_reuse_entries}) for function id {fn_id}. "
+                f"This means guards keep failing across invocations and "
+                f"subgraph reuse is not effective for this function. "
+                f"Set TORCH_LOGS='+higher_order_ops_cache' for details on "
+                f"which guards are failing."
+            )
+        entries.append((condition, entry))
 
     def find_reuse_entry(
         self,

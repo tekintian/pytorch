@@ -5206,9 +5206,9 @@ def build_fingerprint_fast(fn_args_vt: Any) -> InputFingerprint:
         tag = _classify_vt(vt)
         assert tag is not None
         flat_vts.append((tag, vt))
-        source = getattr(vt, "source", None)
-        if source is not None:
-            arg_sources.append(source)
+        # Always append (even None) to keep positional alignment with flat_vts
+        # so that source_replacement zip pairing is correct across calls.
+        arg_sources.append(getattr(vt, "source", None))
     return InputFingerprint(flat_vts, arg_sources)
 
 
@@ -5238,9 +5238,8 @@ def build_fingerprint_with_pytree(
             has_unknown = True
             continue
 
-        source = getattr(vt, "source", None)
-        if source is not None:
-            arg_sources.append(source)
+        # Always append (even None) to keep positional alignment with flat_vts.
+        arg_sources.append(getattr(vt, "source", None))
 
     return InputFingerprint(flat_vts, arg_sources, has_unknown, treespec)
 
@@ -5436,7 +5435,7 @@ def build_reuse_condition(
             continue
 
         expected = handler.get_metadata_fn(guard, value)
-        guard_tuples.append((source, handler, expected))
+        guard_tuples.append((source, handler, expected, guard))
 
     hc_log.debug("Number of guards %s", len(guard_tuples))
 
@@ -5519,12 +5518,21 @@ def is_reusable(
                 return False
         elif cached_tag == "constant":
             if cur_vt.value != cached_val:
-                return False
+                # If both the cached and current arg have sources, source
+                # replacement in stamp_out will resolve the correct value.
+                cached_src = (
+                    cached_entry.arg_sources[i]
+                    if i < len(cached_entry.arg_sources)
+                    else None
+                )
+                new_src = new_arg_sources[i] if i < len(new_arg_sources) else None
+                if cached_src is None or new_src is None:
+                    return False
 
     source_replacement = {
         old: new
         for old, new in zip(cached_entry.arg_sources, new_arg_sources)
-        if old != new
+        if old is not None and new is not None and old != new
     }
 
     def replacement_fn(s: Any) -> Any:
@@ -5532,9 +5540,7 @@ def is_reusable(
 
     # Check for mutations on remapped traced_sources.
     if source_replacement:
-        remapped = OrderedSet(
-            s.clone(replacement_fn) for s in condition.traced_sources
-        )
+        remapped = OrderedSet(s.clone(replacement_fn) for s in condition.traced_sources)
     else:
         remapped = condition.traced_sources
     if has_mutated_vars(tx, remapped):
@@ -5554,7 +5560,7 @@ def is_reusable(
     resolve_locals: dict = {}
     resolve_cache: dict = {}
 
-    for source, handler, expected in condition.guards:
+    for source, handler, expected, guard in condition.guards:
         new_source = source.clone(replacement_fn)
         # Source unchanged after replacement — guard already passed during
         # the original trace, skip re-evaluation.
@@ -5565,16 +5571,26 @@ def is_reusable(
             value = new_source.get_value(resolve_globals, resolve_locals, resolve_cache)
         except Exception:
             hc_log.debug(
-                "subgraph_reuse: reuse failed -- cannot resolve source '%s'",
+                "subgraph_reuse: reuse failed -- cannot resolve source '%s' "
+                "(guard type: %s, user stack:\n%s)",
                 new_source.name,
+                guard.create_fn_name(),
+                "".join(guard.user_stack.format())
+                if guard.user_stack
+                else "<no stack>",
             )
             return False
 
         if not handler.eval_fn(value, expected):
             hc_log.debug(
-                "subgraph_reuse: reuse failed -- guard on '%s': expected %s, got mismatch",
+                "subgraph_reuse: reuse failed -- guard on '%s': expected %s, got mismatch "
+                "(guard type: %s, user stack:\n%s)",
                 new_source.name,
                 expected,
+                guard.create_fn_name(),
+                "".join(guard.user_stack.format())
+                if guard.user_stack
+                else "<no stack>",
             )
             return False
 
@@ -5615,9 +5631,7 @@ def find_reuse_match(
     if fn_id is None:
         return None
 
-    def evaluator(
-        cond: "InvokeSubgraphReuseCondition", entry: Any
-    ) -> bool:
+    def evaluator(cond: "InvokeSubgraphReuseCondition", entry: Any) -> bool:
         return is_reusable(tx, cond, flat_vts, new_arg_sources, entry, treespec)
 
     return invoke_subgraph_cache.find_reuse_entry(fn_id, evaluator)
@@ -5681,7 +5695,10 @@ def save_reuse_entry(
         # rewrite captured variable sources for the current invocation.
         arg_sources=fingerprint.arg_sources,
     )
-    invoke_subgraph_cache.add_reuse_entry(fn_id, condition, entry)
+    max_reuse_entries = 8
+    if isinstance(config, NestedCompileRegionOptions):
+        max_reuse_entries = config.max_reuse_entries
+    invoke_subgraph_cache.add_reuse_entry(fn_id, condition, entry, max_reuse_entries)
 
 
 def stamp_out_subgraph(
@@ -5702,7 +5719,9 @@ def stamp_out_subgraph(
     new_arg_sources = fingerprint.arg_sources
 
     source_replacement = {
-        old: new for old, new in zip(cached.arg_sources, new_arg_sources) if old != new
+        old: new
+        for old, new in zip(cached.arg_sources, new_arg_sources)
+        if old is not None and new is not None and old != new
     }
 
     new_lifted_args = []
@@ -5721,8 +5740,20 @@ def stamp_out_subgraph(
         elif user_arg_idx == -2:
             # TorchScriptObject with SyntheticLocalSource: create a
             # fresh synthetic graph input using the cached constructor.
-            ctor_fn, ctor_args = data
-            vt = tx.output.synthetic_graph_input(ctor_fn, ctor_args)
+            # If ctor_arg_sources are available, use source replacement
+            # to resolve new arg values (e.g. different string per layer).
+            ctor_fn, ctor_args, ctor_arg_sources = data
+            if ctor_arg_sources and source_replacement:
+                new_ctor_args = []
+                for val, arg_src in zip(ctor_args, ctor_arg_sources):
+                    if arg_src is not None:
+                        new_src = arg_src.clone(lambda s: source_replacement.get(s, s))
+                        val = new_src.get_value(
+                            resolve_globals, resolve_locals, resolve_cache
+                        )
+                    new_ctor_args.append(val)
+                ctor_args = tuple(new_ctor_args)
+            vt = tx.output.synthetic_graph_input(ctor_fn, ctor_args, ctor_arg_sources)
             new_lifted_args.append(vt.as_proxy())
         else:
             source = data
@@ -5731,9 +5762,7 @@ def stamp_out_subgraph(
                 new_source = source.clone(lambda s: source_replacement.get(s, s))
             # VariableBuilder deduplicates via input_source_to_var,
             # so this reuses existing graph placeholders automatically.
-            value = new_source.get_value(
-                resolve_globals, resolve_locals, resolve_cache
-            )
+            value = new_source.get_value(resolve_globals, resolve_locals, resolve_cache)
             vt = VariableBuilder(tx, new_source)(value)
             new_lifted_args.append(vt.as_proxy())
 
@@ -5750,6 +5779,7 @@ def stamp_out_subgraph(
             for shape, stride, dtype, device, req_grad in cached.output_metadata
         )
 
+    # TODO - claude - Check if this is doing fake tensor prop
     body_node = make_attr(tx, cached.body_name)
     p_args = (body_node, cached.body_name, *new_lifted_args)
     flat_variable = add_call_function(
@@ -5826,6 +5856,88 @@ def build_freevar_mapping(
     return freevar_mapping
 
 
+# Note: [invoke_subgraph subgraph reuse]
+#
+# When mark_compile_region wraps a function called N times (e.g. 80 identical
+# transformer layers), Dynamo would normally trace the subgraph N times. Each
+# trace involves speculation, guard collection, and graph construction -- all
+# redundant after the first call. Subgraph reuse traces once and stamps out
+# cached copies for subsequent calls.
+#
+# HIGH-LEVEL FLOW
+# ===============
+#
+#   User code: model.layers[0](x), model.layers[1](x), ..., model.layers[79](x)
+#                     |                     |                        |
+#                     v                     v                        v
+#              +--------------+     +--------------+        +--------------+
+#              |  First Call  |     |  Second Call  |  ...   |  80th Call   |
+#              +------+-------+     +------+-------+        +------+-------+
+#                     |                    |                        |
+#                     v                    v                        v
+#              +--------------+     +--------------+        +--------------+
+#              | Full subgraph|     | Cache lookup  |        | Cache lookup  |
+#              |   trace      |     | (is_reusable) |        | (is_reusable) |
+#              +------+-------+     +------+-------+        +------+-------+
+#                     |                    |                        |
+#                     v                    v                        v
+#              +--------------+     +--------------+        +--------------+
+#              | save_reuse_  |     | stamp_out_   |        | stamp_out_   |
+#              | entry()      |     | subgraph()   |        | subgraph()   |
+#              +--------------+     +--------------+        +--------------+
+#
+# WHAT GETS CACHED
+# ================
+#
+# After the first trace, save_reuse_entry stores an InvokeSubgraphReuseEntry
+# (in _guards.py) containing:
+#   - body_name/body_gmod: the traced subgraph
+#   - arg_sources: sources of the original call's arguments
+#   - freevar_mapping: how each lifted arg maps back to user inputs or captures
+#   - output_metadata: shape/stride/dtype/device of outputs
+#
+# Paired with an InvokeSubgraphReuseCondition containing:
+#   - input_checks: (tag, tensor_metadata) per input
+#   - guards: (source, handler, expected, guard) tuples
+#   - treespec: pytree structure of the args
+#   - traced_sources: sources accessed during the trace
+#
+# CACHE LOOKUP (is_reusable)
+# ==========================
+#
+# On subsequent calls:
+#   1. Input structure match -- same treespec, tags, tensor metadata.
+#   2. Source replacement -- clone each guard's source with a replacement map
+#      (old: L['self'].layers[0].weight -> new: L['self'].layers[1].weight),
+#      then evaluate against the new source's runtime value.
+#   3. Mutation check -- reject if the subgraph mutated any captured var.
+#
+# A shared resolve_cache memoizes intermediate source resolution (e.g.
+# L['self'].layers is evaluated once and reused across all guards).
+#
+# STAMP OUT (stamp_out_subgraph)
+# ==============================
+#
+# On cache hit, reconstruct the argument list using the freevar mapping:
+#
+#   index >= 0  -> User arg (activation / explicit input)
+#                  Looked up from new call's flat proxies.
+#
+#   index == -1 -> Sourceful captured var (weight, param, etc)
+#                  Source is cloned with replacement map, resolved via
+#                  VariableBuilder. Deduplicates via input_source_to_var.
+#
+#   index == -2 -> Synthetic object (opaque type with SyntheticLocalSource)
+#                  Reconstructed via cached (ctor_fn, ctor_args).
+#
+# SAFETY
+# ======
+#
+# - max_reuse_entries (default 8, configurable via NestedCompileRegionOptions)
+#   caps cache entries per function. Exceeding it raises RuntimeError.
+# - Mutations on captured variables disable reuse for that entry.
+# - Guard failures logged with guard type + user stack trace.
+#   Enable: TORCH_LOGS='+higher_order_ops_cache'
 class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
     _HOP_NAME = "torch.ops.higher_order.invoke_subgraph"
     _ALLOW_FALLBACK_TO_EAGER = False
@@ -5965,9 +6077,7 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
                 body_name,
                 body_graph_output_vts,
                 tracing_info,
-            ) = self.create_wrapped_node(
-                tx, fn_var, fn_args_vt, kwargs, self._HOP_NAME
-            )
+            ) = self.create_wrapped_node(tx, fn_var, fn_args_vt, kwargs, self._HOP_NAME)
 
         if len(p_kwargs) > 0:
             unimplemented(
