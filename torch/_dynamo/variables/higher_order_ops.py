@@ -5706,6 +5706,15 @@ def stamp_out_subgraph(
     }
 
     new_lifted_args = []
+    # Shared resolution context so get_value memoizes intermediate results
+    # (e.g. L['self'].layers) across all freevars in this stamp-out.
+    resolve_globals = {
+        "G": tx.output.root_tx.f_globals,
+        "L": tx.output.root_tx.f_locals,
+    }
+    resolve_locals: dict = {}
+    resolve_cache: dict = {}
+
     for user_arg_idx, data in cached.freevar_mapping:
         if user_arg_idx >= 0:
             new_lifted_args.append(flat_proxies[user_arg_idx])
@@ -5722,7 +5731,9 @@ def stamp_out_subgraph(
                 new_source = source.clone(lambda s: source_replacement.get(s, s))
             # VariableBuilder deduplicates via input_source_to_var,
             # so this reuses existing graph placeholders automatically.
-            value = tx.output.resolve_source_value(new_source)
+            value = new_source.get_value(
+                resolve_globals, resolve_locals, resolve_cache
+            )
             vt = VariableBuilder(tx, new_source)(value)
             new_lifted_args.append(vt.as_proxy())
 
