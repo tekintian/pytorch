@@ -76,6 +76,11 @@ class NestedCompileRegionOptions:
     # Otherwise, the nested region will use this decompositions.
     decompositions: dict[str, Any] | None = None
 
+    # Maximum number of reuse cache entries per function before raising an
+    # error. If this limit is hit, guards keep failing across invocations
+    # and hierarchical compilation is not effective.
+    max_reuse_entries: int = 8
+
 
 def _extract_nested_region_config(fn):
     """
