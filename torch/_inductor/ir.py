@@ -6962,84 +6962,6 @@ class ExternKernelOut(ExternKernel):
         return True
 
 
-class ExternKernelMultiOut:
-    """Multi-output .out() variant lowering.
-
-    Analogous to ExternKernelOut for single-output ops. Uses FallbackKernel
-    as the packed node with AllocatingMultiOutput children, because
-    multi-output requires FallbackKernel's process_kernel and unflatten_args
-    infrastructure.
-    """
-
-    @staticmethod
-    def try_lower(
-        kernel: torch._ops.OpOverload,
-        example_output: Any,
-        packed: FallbackKernel,
-        *,
-        has_unaligned_input: bool = False,
-    ) -> Sequence[AllocatingMultiOutput] | None:
-        """Configure packed FallbackKernel for .out() codegen.
-
-        Discovers the .out() variant, creates AllocatingMultiOutput child nodes,
-        and configures the packed node to emit .out() calls during codegen.
-        Returns output nodes on success, None on failure.
-        """
-        from torch._library._out_variant import (
-            _is_functional,
-            get_out_arg_names,
-            to_out_variant,
-        )
-
-        if not _is_functional(kernel._schema):
-            return None
-
-        if not isinstance(example_output, (tuple, list)):
-            return None
-
-        out_op = to_out_variant(kernel)
-        if out_op is None:
-            return None
-
-        out_arg_names = get_out_arg_names(out_op)
-        tensors = [t for t in example_output if isinstance(t, torch.Tensor)]
-        if len(tensors) != len(example_output) or len(tensors) != len(out_arg_names):
-            return None
-
-        packed.python_kernel_name = _make_out_variant_kernel_name(out_op)
-        packed.op_overload = out_op
-        packed.out_variant_op = out_op
-        packed.out_arg_names = out_arg_names
-
-        outputs: list[AllocatingMultiOutput] = []
-        for i, tensor_out in enumerate(example_output):
-            layout = FixedLayout(
-                device=tensor_out.device,
-                dtype=tensor_out.dtype,
-                size=[*tensor_out.shape],
-                stride=[*tensor_out.stride()],
-            )
-            multi_out = AllocatingMultiOutput(
-                layout=layout,
-                input=packed,
-                indices=[(type(example_output), i)],
-            )
-            if (
-                config.assume_unaligned_fallback_output
-                or has_unaligned_input
-                or not tensor_is_aligned(tensor_out)
-            ):
-                V.graph.unaligned_buffers.add(multi_out.name)
-            outputs.append(multi_out)
-
-        packed.out_variant_output_nodes = outputs
-        packed.outputs = outputs
-
-        if isinstance(example_output, tuple):
-            return tuple(outputs)  # type: ignore[return-value]
-        return list(outputs)
-
-
 class RandomSeeds(ExternKernelOut):
     def __init__(self, count: int, device: torch.device) -> None:
         limits = torch.iinfo(torch.int64)
@@ -8080,11 +8002,6 @@ class FallbackKernel(ExternKernelAlloc):
         self.use_runtime_dispatch = False
         self.unbacked_bindings = unbacked_bindings or {}
 
-        # Used when this kernel should emit .out() variant codegen
-        self.out_variant_op: torch._ops.OpOverload | None = None
-        self.out_arg_names: list[str] = []
-        self.out_variant_output_nodes: list[Any] = []
-
         assert isinstance(
             kernel, (torch._ops.OpOverload, torch._ops.HigherOrderOperator)
         ), f"Fails to create FallbackKernel for {kernel}: {type(kernel)} not supported"
@@ -8539,8 +8456,7 @@ class FallbackKernel(ExternKernelAlloc):
                 unbacked_bindings,
             ) = cls.process_kernel(kernel, *args, **kwargs)
 
-        # Try to lower functional custom ops to their out-variant for buffer
-        # reuse. Only affects ops with the torch.Tag.out_variant tag.
+        # Try to lower single output functional custom ops to their out-variant.
         if isinstance(kernel, torch._ops.OpOverload):
             from torch._library._out_variant import (
                 _is_functional,
@@ -8552,23 +8468,21 @@ class FallbackKernel(ExternKernelAlloc):
                 example_output, torch.Tensor
             ):
                 out_op = to_out_variant(kernel)
-                if out_op is not None:
-                    out_arg_names = get_out_arg_names(out_op)
-                    if len(out_arg_names) == 1:
-                        layout = FixedLayout(
-                            device=example_output.device,
-                            dtype=example_output.dtype,
-                            size=[*example_output.shape],
-                            stride=[*example_output.stride()],
-                        )
-                        return ExternKernelOut(
-                            layout=layout,
-                            inputs=list(tensor_args),
-                            constant_args=list(non_tensor_args),
-                            kwargs=kwargs,
-                            python_kernel_name=_make_out_variant_kernel_name(out_op),
-                            op_overload=out_op,
-                        )
+                if out_op is not None and len(get_out_arg_names(out_op)) == 1:
+                    layout = FixedLayout(
+                        device=example_output.device,
+                        dtype=example_output.dtype,
+                        size=[*example_output.shape],
+                        stride=[*example_output.stride()],
+                    )
+                    return ExternKernelOut(  # type: ignore[return-value]
+                        layout=layout,
+                        inputs=list(tensor_args),
+                        constant_args=list(non_tensor_args),
+                        kwargs=kwargs,
+                        python_kernel_name=_make_out_variant_kernel_name(out_op),
+                        op_overload=out_op,
+                    )
 
         # We need this extra check for input alignment since the example
         # inputs we created are always aligned.
@@ -8582,6 +8496,26 @@ class FallbackKernel(ExternKernelAlloc):
             or kernel is torch.ops.higher_order.print
         ):
             device = torch.device("cpu")
+
+        # Try multi-output .out() lowering for ops with out_variant tag.
+        if (
+            isinstance(kernel, torch._ops.OpOverload)
+            and not V.graph.cpp_wrapper
+            and device
+        ):
+            out_result = ExternKernelMultiOut.try_create(
+                kernel,
+                example_output,
+                device,
+                tensor_args,
+                non_tensor_args,
+                unflatten_args,
+                kwargs,
+                unbacked_bindings=unbacked_bindings,
+                has_unaligned_input=has_unaligned_input,
+            )
+            if out_result is not None:
+                return out_result  # type: ignore[return-value]
 
         if example_output is None:
             packed = cls(
@@ -8639,17 +8573,6 @@ class FallbackKernel(ExternKernelAlloc):
                     f"FallbackKernel output type {type(output)} is not supported"
                 )
                 return None
-
-        # Try multi-output .out() lowering for ops with out_variant tag.
-        if isinstance(kernel, torch._ops.OpOverload) and not V.graph.cpp_wrapper:
-            out_outputs = ExternKernelMultiOut.try_lower(
-                kernel,
-                example_output,
-                packed,
-                has_unaligned_input=has_unaligned_input,
-            )
-            if out_outputs is not None:
-                return out_outputs  # type: ignore[return-value]
 
         outputs = generate_output(example_output, [])
         if isinstance(outputs, (list, tuple)):
@@ -8792,6 +8715,111 @@ def _make_out_variant_kernel_name(out_op: torch._ops.OpOverload) -> str:
     op_name = out_op._schema.name.split("::")[1]
     overload = out_op._overloadname
     return f"torch.ops.{ns}.{op_name}.{overload}"
+
+
+class ExternKernelMultiOut(FallbackKernel):
+    """Multi-output .out() variant lowering.
+
+    Subclass of FallbackKernel that emits .out() calls with pre-allocated
+    output buffers. Uses AllocatingMultiOutput child nodes for each output.
+    """
+
+    out_arg_names: list[str]
+    out_variant_output_nodes: list[AllocatingMultiOutput]
+
+    def __init__(
+        self,
+        *args: Any,
+        out_op: torch._ops.OpOverload,
+        out_arg_names: list[str],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.out_arg_names = out_arg_names
+        self.out_variant_output_nodes = []
+        self.python_kernel_name = _make_out_variant_kernel_name(out_op)
+        self.op_overload = out_op
+
+    def codegen(self, wrapper: PythonWrapperCodegen) -> None:
+        self.codegen_comment(wrapper)
+        wrapper.generate_extern_kernel_multi_out(self)
+
+    @classmethod
+    def try_create(
+        cls,
+        kernel: torch._ops.OpOverload,
+        example_output: Any,
+        device: torch.device,
+        tensor_args: Sequence[IRNode],
+        non_tensor_args: Sequence[Any],
+        unflatten_args: Callable[..., Any],
+        kwargs: dict[str, Any] | None,
+        *,
+        unbacked_bindings: dict[sympy.Symbol, pytree.KeyPath] | None = None,
+        has_unaligned_input: bool = False,
+    ) -> Sequence[AllocatingMultiOutput] | None:
+        """Create an ExternKernelMultiOut if the op has a matching .out() variant."""
+        from torch._library._out_variant import (
+            _is_functional,
+            get_out_arg_names,
+            to_out_variant,
+        )
+
+        if not _is_functional(kernel._schema):
+            return None
+
+        if not isinstance(example_output, (tuple, list)):
+            return None
+
+        out_op = to_out_variant(kernel)
+        if out_op is None:
+            return None
+
+        out_arg_names = get_out_arg_names(out_op)
+        if not all(isinstance(t, torch.Tensor) for t in example_output):
+            return None
+        if len(example_output) != len(out_arg_names):
+            return None
+
+        packed = cls(
+            MultiOutputLayout(device=device),
+            kernel,
+            tensor_args,
+            non_tensor_args,
+            unflatten_args,
+            kwargs=kwargs,
+            unbacked_bindings=unbacked_bindings,
+            out_op=out_op,
+            out_arg_names=out_arg_names,
+        )
+
+        outputs: list[AllocatingMultiOutput] = []
+        for i, tensor_out in enumerate(example_output):
+            layout = FixedLayout(
+                device=tensor_out.device,
+                dtype=tensor_out.dtype,
+                size=[*tensor_out.shape],
+                stride=[*tensor_out.stride()],
+            )
+            multi_out = AllocatingMultiOutput(
+                layout=layout,
+                input=packed,
+                indices=[(type(example_output), i)],
+            )
+            if (
+                config.assume_unaligned_fallback_output
+                or has_unaligned_input
+                or not tensor_is_aligned(tensor_out)
+            ):
+                V.graph.unaligned_buffers.add(multi_out.name)  # type: ignore[arg-type]
+            outputs.append(multi_out)
+
+        packed.out_variant_output_nodes = outputs
+        packed.outputs = outputs
+
+        if isinstance(example_output, tuple):
+            return tuple(outputs)  # type: ignore[return-value]
+        return list(outputs)
 
 
 # We just use a normal dataclass for MutableBox/TensorBox/StorageBox since

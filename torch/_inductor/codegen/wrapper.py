@@ -620,7 +620,7 @@ class ExternKernelMultiOutLine(WrapperLine):
     """
 
     wrapper: PythonWrapperCodegen
-    node: ir.FallbackKernel
+    node: ir.ExternKernelMultiOut
 
     def codegen(self, code: IndentedBuffer) -> None:
         node = self.node
@@ -1644,13 +1644,6 @@ class PythonWrapperCodegen(CodeGen):
         return
 
     def generate_fallback_kernel(self, node: ir.FallbackKernel) -> None:
-        if getattr(node, "out_variant_op", None) is not None:
-            node.codegen_comment(self)
-            # Allocate output buffers before the .out() call
-            for out_node in node.out_variant_output_nodes:
-                self.codegen_allocation(out_node)
-            self.writeline(ExternKernelMultiOutLine(self, node))
-            return
         # Check if this op has a custom codegen implementation
         op_name = node.python_kernel_name
         if op_name is not None and op_name in CUSTOM_EXTERN_KERNEL_CODEGEN:
@@ -1659,6 +1652,12 @@ class PythonWrapperCodegen(CodeGen):
                 custom_codegen(node, self.writeline)
                 return
         self.writeline(ExternKernelAllocLine(self, node))
+
+    def generate_extern_kernel_multi_out(self, node: ir.ExternKernelMultiOut) -> None:
+        """Generate .out() call with pre-allocated output buffers."""
+        for out_node in node.out_variant_output_nodes:
+            self.codegen_allocation(out_node)
+        self.writeline(ExternKernelMultiOutLine(self, node))
 
     def generate_extern_kernel_alloc(self, node: ir.ExternKernelAlloc):
         node.codegen_comment(self)
