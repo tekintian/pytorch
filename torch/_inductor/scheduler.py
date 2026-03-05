@@ -3912,7 +3912,8 @@ class Scheduler:
             or node1.is_foreach()
             or node2.is_foreach()
         ):
-            # TODO support benchmarking epilogue fusion
+            # Non-Triton templates (CuteDSL, standalone NVUniversalGemmBuffer) auto-fuse.
+            # NVGEMM fusion benchmarking goes through the MultiTemplateBuffer path below.
             return FusionResult.fuse(True)
 
         node_list_1 = node1.get_nodes()
@@ -3941,7 +3942,14 @@ class Scheduler:
 
         def log_fusion(ms_fused: float, ms1: float, ms2: float) -> None:
             if fusion_log.isEnabledFor(logging.DEBUG):
-                if ms_fused < ms1 + ms2:
+                # Guard against zero values (e.g., NVGEMM skips benchmarking)
+                if ms_fused == 0.0:
+                    fusion_log.debug(
+                        "can fuse (assumed): fusing %s with %s (benchmarking skipped)",
+                        node1.get_buffer_names(),
+                        node2.get_buffer_names(),
+                    )
+                elif ms_fused < ms1 + ms2:
                     fusion_log.debug(
                         "can fuse (benchmark): fusing %s with %s cause %sx speedup",
                         node1.get_buffer_names(),
@@ -3965,7 +3973,13 @@ class Scheduler:
                 nodes, benchmark_kernel=True, hint_override=hint_override
             )
             mod = PyCodeCache.load(src_code)
-            if not async_compile.use_process_pool():
+
+            # Check if this is an NVGEMM template (no triton_ kernel to compile)
+            has_triton = hasattr(mod, "triton_")
+            if not has_triton:
+                # No triton kernel to compile (e.g., NVGEMM templates)
+                fut = None
+            elif not async_compile.use_process_pool():
                 fut = None
             else:
                 fut = async_compile.triton(kernel_name="triton_", source_code=src_code)
@@ -3985,7 +3999,7 @@ class Scheduler:
             assert isinstance(multi_node, ir.MultiTemplateBuffer)
 
             hint_override_best_fusion_choice: dict[
-                Optional[int], TritonTemplateCallerBase
+                Optional[int], ir.ChoiceCaller
             ] = {}
             future_choices: list[tuple[Any, Optional[LambdaFuture], ModuleType]] = []
             for hint_override in config.multi_kernel_hints:
@@ -4032,23 +4046,26 @@ class Scheduler:
                 assert isinstance(ms_fused_choice, TritonTemplateCallerBase)
                 hint_override_best_fusion_choice[hint_override] = ms_fused_choice
 
+            from torch._inductor.codegen.nv_universal_gemm import NVUniversalGemmCaller
+
             bench_epilogue = config.benchmark_epilogue_fusion
-            num_triton_callers = sum(
-                isinstance(c, TritonTemplateCallerBase) for c in multi_node.choices
+            num_fusible_callers = sum(
+                isinstance(c, (TritonTemplateCallerBase, NVUniversalGemmCaller))
+                for c in multi_node.choices
             )
             # Track if the choice timings can be retrieved async after compilation
             get_choice_timings_async = (
                 config.pipeline_max_autotune_gemm
                 and not bench_epilogue
-                and num_triton_callers <= config.max_epilogue_benchmarked_choices
+                and num_fusible_callers <= config.max_epilogue_benchmarked_choices
             )
 
             ms1, ms2 = float("inf"), float("inf")
             min_choice: ir.ChoiceCaller | None = None
             if not get_choice_timings_async:
-                # Eagerly compile and benchmark non-template nodes
                 choice_timings = multi_node.choice_timings()
                 min_choice, ms1 = multi_node.get_min_choice()
+
                 choice_timings_iter = sorted(
                     choice_timings.items(), key=operator.itemgetter(1)
                 )
@@ -4071,11 +4088,18 @@ class Scheduler:
                 ms2 = node2._get_estimated_runtime()
                 ms2_fused = _estimate_fused_epilogue_runtime(node1, node2, ms2)
 
-            # Start compiling choices in parallel
             future_choices: list[tuple[Any, Optional[LambdaFuture], ModuleType]] = []
-            triton_choices = 0
+            template_choices = 0
             for choice, unfused_time in choice_timings_iter:
-                if not isinstance(choice, TritonTemplateCallerBase):
+                is_triton = isinstance(
+                    choice, torch._inductor.ir.TritonTemplateCallerBase
+                )
+                is_nvgemm = isinstance(choice, NVUniversalGemmCaller)
+
+                if not is_triton and not is_nvgemm:
+                    continue
+
+                if is_nvgemm and not choice.supports_epilogue_fusion:
                     continue
 
                 # For prologue fusion we check if the underlying template of the choice
@@ -4084,7 +4108,8 @@ class Scheduler:
                 # TODO: Remove this check after all Triton templates support prologue fusion.
                 # Currently, persistent+TMA Triton template does not due to the TMA-based loads.
                 if (
-                    not epilogue_fusion
+                    is_triton
+                    and not epilogue_fusion
                     and hasattr(choice, "allowed_prologue_inps")
                     and choice.allowed_prologue_inps != multi_node.allowed_prologue_inps
                 ):
@@ -4093,12 +4118,21 @@ class Scheduler:
                 if bench_epilogue and unfused_time >= ms1 + ms2:
                     break
 
-                triton_choices += 1
-                if triton_choices > config.max_epilogue_benchmarked_choices:
+                template_choices += 1
+                if template_choices > config.max_epilogue_benchmarked_choices:
                     break
 
-                with multi_node.swap_as_triton_caller(choice):
-                    future_choices.append((choice, *compile_kernel(node_list_fused)))
+                # Use appropriate swap method based on choice type
+                if is_triton:
+                    with multi_node.swap_as_triton_caller(choice):
+                        future_choices.append(
+                            (choice, *compile_kernel(node_list_fused))
+                        )
+                else:  # is_nvgemm
+                    with multi_node.swap_as_nvgemm_caller(choice):
+                        future_choices.append(
+                            (choice, *compile_kernel(node_list_fused))
+                        )
 
             if len(future_choices) == 0:
                 return FusionResult.fuse(False)
@@ -4124,8 +4158,12 @@ class Scheduler:
                         if future is not None:
                             res = future.result()
                         elif not bench_epilogue:
-                            res = mod_fused.triton_
-                            res.precompile()
+                            if hasattr(mod_fused, "triton_"):
+                                res = mod_fused.triton_
+                                res.precompile()
+                            else:
+                                # NVGEMM modules don't have triton_ attribute
+                                res = None
                         else:
                             res = None
 
@@ -4141,8 +4179,14 @@ class Scheduler:
                         continue
 
                     if bench_epilogue:
-                        # pyrefly: ignore [missing-attribute]
-                        with multi_node.swap_as_triton_caller(choice):
+                        # Use appropriate swap method based on choice type
+                        is_nvgemm_choice = isinstance(choice, NVUniversalGemmCaller)
+                        swap_ctx = (
+                            multi_node.swap_as_nvgemm_caller(choice)
+                            if is_nvgemm_choice
+                            else multi_node.swap_as_triton_caller(choice)
+                        )
+                        with swap_ctx:
                             ms_fused, path = self.benchmark_codegened_module(
                                 mod_fused,
                                 # pyrefly: ignore [bad-argument-type]
@@ -4158,7 +4202,12 @@ class Scheduler:
                             or ms2 + ms1 > choice_timings[choice] + ms2_fused
                         )
 
-                        if (
+                        is_nvgemm_choice = isinstance(choice, NVUniversalGemmCaller)
+                        if is_nvgemm_choice and fusible_choice:
+                            # NVGEMM doesn't have triton launchers/spill info
+                            ms_fused_choice = choice
+                            break
+                        elif (
                             res
                             # pyrefly: ignore [missing-attribute]
                             and len(res.launchers) == 1
@@ -4177,13 +4226,19 @@ class Scheduler:
                 ) and ms_fused_choice is not None:
                     if config.multi_kernel_hints:
                         hint_override_best_fusion_choice[None] = ms_fused_choice
-                        # pyrefly: ignore [missing-attribute]
-                        multi_node.finalize_as_triton_callers(
-                            hint_override_best_fusion_choice
-                        )
+                        if isinstance(ms_fused_choice, NVUniversalGemmCaller):
+                            multi_node.finalize_as_nvgemm_caller(ms_fused_choice)
+                        else:
+                            # pyrefly: ignore [missing-attribute]
+                            multi_node.finalize_as_triton_callers(
+                                hint_override_best_fusion_choice
+                            )
                     else:
-                        # pyrefly: ignore [missing-attribute]
-                        multi_node.finalize_as_triton_caller(ms_fused_choice)
+                        if isinstance(ms_fused_choice, NVUniversalGemmCaller):
+                            multi_node.finalize_as_nvgemm_caller(ms_fused_choice)
+                        else:
+                            # pyrefly: ignore [missing-attribute]
+                            multi_node.finalize_as_triton_caller(ms_fused_choice)
 
                     # pyrefly: ignore [missing-attribute]
                     multi_node._choice_timings[None] = new_timings
