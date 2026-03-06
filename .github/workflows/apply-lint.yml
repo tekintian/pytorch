@@ -10,7 +10,7 @@ jobs:
     environment: mergebot
     env:
       GH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      LINTERS: CLANGFORMAT,NATIVEFUNCTIONS,NEWLINE,CODESPELL,PYFMT,BAZEL_LINTER,RUFF,MERGE_CONFLICTLESS_CSV,ATEN_CPU_GPU_AGNOSTIC,SET_LINTER
+      LINTERS: CLANGFORMAT,NEWLINE,PYFMT,BAZEL_LINTER,RUFF,ATEN_CPU_GPU_AGNOSTIC
     steps:
       - name: Checkout repo
         id: checkout
@@ -36,7 +36,7 @@ jobs:
 
       - name: Install and initialize lintrunner
         run: |
-          pip install lintrunner pyyaml==6.0.2
+          pip install lintrunner pyyaml==6.0.2 uv
           lintrunner init --take "$LINTERS"
 
       - name: Setup committer id
