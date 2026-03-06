@@ -1,8 +1,8 @@
-add_loop_eager,compile_time_instruction_count,3254000000,0.1
+add_loop_eager,compile_time_instruction_count,3347000000,0.1
 
 
 
-add_loop_eager_dynamic,compile_time_instruction_count,4544000000,0.1
+add_loop_eager_dynamic,compile_time_instruction_count,4582000000,0.1
 
 
 
@@ -10,7 +10,7 @@ add_loop_inductor,compile_time_instruction_count,29660000000,0.1
 
 
 
-add_loop_inductor_dynamic_gpu,compile_time_instruction_count,37080000000,0.1
+add_loop_inductor_dynamic_gpu,compile_time_instruction_count,37230000000,0.1
 
 
 
@@ -26,7 +26,7 @@ basic_modules_ListOfLinears_inductor,compile_time_instruction_count,15240000000,
 
 
 
-basic_modules_ListOfLinears_inductor_gpu_force_shape_pad,compile_time_instruction_count,17190000000,0.1
+basic_modules_ListOfLinears_inductor_gpu_force_shape_pad,compile_time_instruction_count,17330000000,0.1
 
 
 
@@ -34,19 +34,19 @@ basic_modules_ListOfLinears_inductor_gpu,compile_time_instruction_count,11090000
 
 
 
-update_hint_regression,compile_time_instruction_count,1543000000,0.1
+update_hint_regression,compile_time_instruction_count,1552000000,0.1
 
 
 
-sum_floordiv_regression,compile_time_instruction_count,3458000000,0.1
+sum_floordiv_regression,compile_time_instruction_count,3483000000,0.1
 
 
 
-symint_sum,compile_time_instruction_count,3099000000,0.1
+symint_sum,compile_time_instruction_count,3108000000,0.1
 
 
 
-symint_sum_loop,compile_time_instruction_count,4287000000,0.1
+symint_sum_loop,compile_time_instruction_count,4302000000,0.1
 
 
 
@@ -58,11 +58,11 @@ aotdispatcher_inference_subclass_cpu,compile_time_instruction_count,4988000000,0
 
 
 
-aotdispatcher_partitioner_cpu,compile_time_instruction_count,7828000000,0.1
+aotdispatcher_partitioner_cpu,compile_time_instruction_count,7839000000,0.1
 
 
 
-aotdispatcher_partitioner_cpu2,compile_time_instruction_count,1828000000,0.1
+aotdispatcher_partitioner_cpu2,compile_time_instruction_count,1833000000,0.1
 
 
 
@@ -70,39 +70,39 @@ aotdispatcher_training_nosubclass_cpu,compile_time_instruction_count,3152000000,
 
 
 
-aotdispatcher_training_subclass_cpu,compile_time_instruction_count,8014000000,0.1
+aotdispatcher_training_subclass_cpu,compile_time_instruction_count,8027000000,0.1
 
 
 
-mm_loop_inductor_gpu,compile_time_instruction_count,4501000000,0.1
+mm_loop_inductor_gpu,compile_time_instruction_count,5021000000,0.1
 
 
 
-mm_loop_inductor_dynamic_gpu,compile_time_instruction_count,9051000000,0.1
+mm_loop_inductor_dynamic_gpu,compile_time_instruction_count,9466000000,0.1
 
 
 
-basic_NestedModule_eager,compile_time_instruction_count,5647000000,0.1
+basic_NestedModule_eager,compile_time_instruction_count,5734000000,0.1
 
 
 
-basic_InlineMod_eager,compile_time_instruction_count,7480000000,0.1
+basic_InlineMod_eager,compile_time_instruction_count,7711000000,0.1
 
 
 
-dtensor_dispatch_detach,instruction_count,57370,0.1
+dtensor_dispatch_detach,instruction_count,56080,0.1
 
 
 
-dtensor_dispatch_to_from_local,instruction_count,231900,0.1
+dtensor_dispatch_to_from_local,instruction_count,229200,0.1
 
 
 
-dtensor_dispatch_collectives,instruction_count,29000000,0.1
+dtensor_dispatch_collectives,instruction_count,29020000,0.1
 
 
 
-dtensor_dispatch_add_backward,instruction_count,354000,0.1
+dtensor_dispatch_add_backward,instruction_count,353300,0.1
 
 
 
@@ -118,4 +118,4 @@ dtensor_dispatch_random,instruction_count,592800,0.1
 
 
 
-dtensor_dispatch_custom_handler,instruction_count,36120,0.1
+dtensor_dispatch_custom_handler,instruction_count,35110,0.1
