@@ -1,7 +1,10 @@
 import torch
 
+from ... import triton_utils as tu
+
 
 def triton_to_mxfp8_dim0(
+    keyset: torch.DispatchKeySet,
     x: torch.Tensor,
     inner_block_size: int = 32,
     scaling_mode: str = "rceil",
@@ -59,7 +62,8 @@ def triton_to_mxfp8_dim0(
     )
 
     # Launch the kernel
-    torch.library.wrap_triton(to_mxfp8_dim0_kernel)[grid](
+    # torch.library.wrap_triton(to_mxfp8_dim0_kernel)[grid](
+    to_mxfp8_dim0_kernel[grid](
         x_ptr=x,
         output_ptr=output,
         scale_ptr=scale,
@@ -97,13 +101,14 @@ def _mxfp8_quant_fake(x, inner_block_size, scaling_mode):
 
 
 def register_to_dispatcher():
-    # torch.library.triton_op("mxfp8_quant::triton_to_mxfp8_dim0", mutates_args={})(triton_to_mxfp8_dim0)
-    torch.library.custom_op("mxfp8_quant::triton_to_mxfp8_dim0", mutates_args={})(
-        triton_to_mxfp8_dim0
+    # NOTE: This doesn't actually work..
+    #       Want to use a custom op (unsupported right now)
+    tu.register_op_override(
+        "mxfp8_quant",
+        "triton_to_mxfp8_dim0",
+        "CUDA",
+        triton_to_mxfp8_dim0,
     )
 
-    torch.library.register_autograd(
-        "mxfp8_quant::triton_to_mxfp8_dim0", None, setup_context=None
-    )
 
-    torch.library.register_fake("mxfp8_quant::triton_to_mxfp8_dim0")(_mxfp8_quant_fake)
+register_to_dispatcher()
