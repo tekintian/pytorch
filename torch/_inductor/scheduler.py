@@ -5732,6 +5732,9 @@ class Scheduler:
             return False
 
         if isinstance(node1, ExternKernelSchedulerNode):
+            if not config.epilogue_fusion_user_defined_triton_kernel:
+                why("node1 is extern and user triton kernel fusion is disabled")
+                return False
             if not isinstance(node1.node, ir.UserDefinedTritonKernel):
                 why("node1 is extern but not a triton kernel")
                 return False
