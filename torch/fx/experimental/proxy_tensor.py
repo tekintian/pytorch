@@ -42,6 +42,7 @@ from torch._dispatch.python import enable_python_dispatcher
 from torch._library.fake_class_registry import FakeScriptObject
 from torch._library.opaque_object import is_opaque_value, OpaqueType
 from torch._logging import trace_structured
+from torch._opaque_base import OpaqueBase
 from torch._ops import HigherOrderOperator
 from torch._subclasses.fake_impls import fast_detach
 from torch._subclasses.fake_tensor import (
@@ -72,7 +73,7 @@ from torch.utils._python_dispatch import (
 )
 from torch.utils._stats import count
 from torch.utils._thunk import Thunk
-from torch.utils.weak import _WeakHashRef, WeakIdKeyDictionary, WeakTensorKeyDictionary
+from torch.utils.weak import WeakIdKeyDictionary, WeakTensorKeyDictionary
 
 from ._backward_state import BackwardState
 from .sym_node import SymNode
@@ -1329,9 +1330,7 @@ class PythonKeyTracer(Tracer):
         super().__init__(autowrap_modules=())  # type: ignore[arg-type]
         self.tensor_tracker = WeakTensorKeyDictionary()
         self.symnode_tracker = _SymNodeDict()
-        self.script_object_tracker = WeakIdKeyDictionary(
-            dict=None, ref_type=_WeakHashRef
-        )
+        self.script_object_tracker = WeakIdKeyDictionary()
         self.sympy_expr_tracker = {}
 
         # Stores the torch function that was called during tracing
@@ -1604,6 +1603,9 @@ def wrap_key(
         out = pytree.tree_map_only(Tensor, get_tensor_proxy_slot, out)
         out = pytree.tree_map_only(
             _AnyScriptObject, lambda t: get_proxy_slot(t, tracer, t, lambda x: x), out
+        )
+        out = pytree.tree_map_only(
+            OpaqueBase, lambda t: get_proxy_slot(t, tracer, t, lambda x: x), out
         )
 
         def get_sym_proxy_slot(t: PySymType) -> Proxy:
@@ -1896,9 +1898,7 @@ class _GraphAppendingTracerEx(fx.proxy.GraphAppendingTracer):
         self.symnode_tracker = weakref.WeakKeyDictionary()
         self.tensor_tracker = WeakTensorKeyDictionary()
         self.sympy_expr_tracker = {}
-        self.script_object_tracker = WeakIdKeyDictionary(
-            dict=None, ref_type=_WeakHashRef
-        )
+        self.script_object_tracker = WeakIdKeyDictionary()
         # Stores the torch function that was called during tracing
         self.torch_fn_metadata = None
         # Stores the counts for every torch function called. This is to help
