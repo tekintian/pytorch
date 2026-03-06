@@ -18,7 +18,7 @@ from torch.distributed.tensor import (
     Replicate,
     Shard,
 )
-from torch.distributed.tensor._ops.single_dim_strategy import _ShardingPlaceholder
+from torch.distributed.tensor._ops.strategy_validation import compare_operator
 from torch.overrides import resolve_name
 from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
@@ -30,10 +30,9 @@ from torch.testing._internal.common_utils import run_tests, suppress_warnings, T
 from torch.testing._internal.distributed._tensor.common_dtensor import (
     DTensorConverter,
     DTensorOpTestBase,
-    validate_sharding_rule_sample,
 )
 from torch.utils import _pytree as pytree
-from torch.utils._debug_mode import _OpCall, DebugMode
+from torch.utils._debug_mode import DebugMode
 from torch.utils._pytree import tree_flatten, tree_map
 
 
@@ -533,6 +532,225 @@ dtensor_fails_no_strategy = {
     xfail("unfold_copy"),
     xfail("unique"),
     xfail("unique_consecutive"),
+}
+
+# Ops with no DTensor sharding strategy registered, as detected by the strategy
+# validator (checks op_single_dim_strategy_funcs, op_strategy_funcs, and
+# DecompShardingStrategy). This differs from dtensor_fails_no_strategy which is
+# determined by runtime NotImplementedError when actually running ops on DTensors.
+strategy_validation_no_strategy = {
+    xfail("addbmm"),
+    xfail("allclose"),
+    xfail("arange"),
+    xfail("argwhere"),
+    xfail("as_strided"),
+    xfail("broadcast_shapes"),
+    xfail("cat"),
+    xfail("cdist"),
+    xfail("cholesky"),
+    xfail("cholesky_inverse"),
+    xfail("cholesky_solve"),
+    xfail("_chunk_cat"),
+    xfail("column_stack"),
+    xfail("conj"),
+    xfail("conj_physical"),
+    xfail("contiguous"),
+    xfail("cummax"),
+    xfail("cummin"),
+    xfail("cumprod"),
+    xfail("dstack"),
+    xfail("empty"),
+    xfail("empty_permuted"),
+    xfail("empty_strided"),
+    xfail("eye"),
+    xfail("full"),
+    xfail("geqrf"),
+    xfail("hash_tensor"),
+    xfail("histogram"),
+    xfail("histogramdd"),
+    xfail("hstack"),
+    xfail("index_reduce", "amax"),
+    xfail("kthvalue"),
+    xfail("linalg.cholesky"),
+    xfail("linalg.cholesky_ex"),
+    xfail("linalg.det"),
+    xfail("linalg.eig"),
+    xfail("linalg.eigvals"),
+    xfail("linalg.householder_product"),
+    xfail("linalg.inv"),
+    xfail("linalg.inv_ex"),
+    xfail("linalg.ldl_factor"),
+    xfail("linalg.ldl_factor_ex"),
+    xfail("linalg.ldl_solve"),
+    xfail("linalg.lstsq"),
+    xfail("linalg.lu"),
+    xfail("linalg.lu_factor"),
+    xfail("linalg.lu_factor_ex"),
+    xfail("linalg.lu_solve"),
+    xfail("linalg.matrix_rank"),
+    xfail("linalg.multi_dot"),
+    xfail("linalg.pinv"),
+    xfail("linalg.slogdet"),
+    xfail("linalg.solve"),
+    xfail("linalg.solve_ex"),
+    xfail("linalg.solve_triangular"),
+    xfail("logcumsumexp"),
+    xfail("logdet"),
+    xfail("lu"),
+    xfail("lu_solve"),
+    xfail("lu_unpack"),
+    xfail("masked.median"),
+    xfail("masked_scatter"),
+    xfail("masked_select"),
+    xfail("matrix_exp"),
+    xfail("max_pool2d_with_indices_backward"),
+    xfail("median"),
+    xfail("mode"),
+    xfail("multinomial"),
+    xfail("nanmedian"),
+    xfail("nanquantile"),
+    xfail("nn.functional.adaptive_avg_pool3d"),
+    xfail("nn.functional.adaptive_max_pool2d"),
+    xfail("nn.functional.adaptive_max_pool3d"),
+    xfail("nn.functional.avg_pool2d"),
+    xfail("nn.functional.avg_pool3d"),
+    xfail("nn.functional.batch_norm"),
+    xfail("nn.functional.conv1d"),
+    xfail("nn.functional.conv2d"),
+    xfail("nn.functional.conv3d"),
+    xfail("nn.functional.conv_transpose1d"),
+    xfail("nn.functional.conv_transpose2d"),
+    xfail("nn.functional.conv_transpose3d"),
+    xfail("nn.functional.ctc_loss"),
+    xfail("nn.functional.embedding_bag"),
+    xfail("nn.functional.fractional_max_pool2d"),
+    xfail("nn.functional.fractional_max_pool3d"),
+    xfail("nn.functional.max_pool2d"),
+    xfail("nn.functional.max_pool3d"),
+    xfail("nn.functional.pdist"),
+    xfail("nonzero"),
+    xfail("nonzero_static"),
+    xfail("ones"),
+    xfail("ormqr"),
+    xfail("positive"),
+    xfail("prod"),
+    xfail("put"),
+    xfail("quantile"),
+    xfail("randint"),
+    xfail("randn"),
+    xfail("real"),
+    xfail("resize_"),
+    xfail("resize_as_"),
+    xfail("resolve_conj"),
+    xfail("resolve_neg"),
+    xfail("scalar_tensor"),
+    xfail("scatter_reduce", "amax"),
+    xfail("searchsorted"),
+    xfail("_segment_reduce", "lengths"),
+    xfail("signal.windows.bartlett"),
+    xfail("signal.windows.blackman"),
+    xfail("signal.windows.cosine"),
+    xfail("signal.windows.exponential"),
+    xfail("signal.windows.gaussian"),
+    xfail("signal.windows.general_cosine"),
+    xfail("signal.windows.general_hamming"),
+    xfail("signal.windows.hamming"),
+    xfail("signal.windows.hann"),
+    xfail("signal.windows.kaiser"),
+    xfail("signal.windows.nuttall"),
+    xfail("sparse.mm", "reduce"),
+    xfail("sparse.sampled_addmm"),
+    xfail("special.airy_ai"),
+    xfail("special.bessel_y0"),
+    xfail("special.bessel_y1"),
+    xfail("special.chebyshev_polynomial_t"),
+    xfail("special.chebyshev_polynomial_u"),
+    xfail("special.chebyshev_polynomial_v"),
+    xfail("special.chebyshev_polynomial_w"),
+    xfail("special.hermite_polynomial_h"),
+    xfail("special.hermite_polynomial_he"),
+    xfail("special.laguerre_polynomial_l"),
+    xfail("special.legendre_polynomial_p"),
+    xfail("special.modified_bessel_i0"),
+    xfail("special.modified_bessel_i1"),
+    xfail("special.modified_bessel_k0"),
+    xfail("special.modified_bessel_k1"),
+    xfail("special.scaled_modified_bessel_k0"),
+    xfail("special.scaled_modified_bessel_k1"),
+    xfail("special.shifted_chebyshev_polynomial_t"),
+    xfail("special.shifted_chebyshev_polynomial_u"),
+    xfail("special.shifted_chebyshev_polynomial_v"),
+    xfail("special.shifted_chebyshev_polynomial_w"),
+    xfail("stack"),
+    xfail("to_sparse"),
+    xfail("triangular_solve"),
+    xfail("unique"),
+    xfail("unique_consecutive"),
+    xfail("_upsample_bilinear2d_aa"),
+    xfail("vstack"),
+    xfail("zeros"),
+}
+
+# Ops where the validator detects incorrect sharding rules (false positives).
+# Ops that decompose into multiple aten calls (non-1:1 aten mapping) are
+# skipped automatically by compare_operator, so they don't appear here.
+strategy_validation_incorrect_rules = {
+    # dtype conversion ops (aten._to_copy): rules like P(sum)->P(sum) are
+    # technically correct but fail numeric validation because dtype truncation
+    # (e.g. float32->bfloat16) is not precision-preserving across partial sums.
+    xfail("bfloat16"),
+    xfail("byte"),
+    xfail("cdouble"),
+    xfail("cfloat"),
+    xfail("chalf"),
+    xfail("char"),
+    xfail("half"),
+    xfail("int"),
+    xfail("long"),
+    xfail("short"),
+    xfail("to"),
+    # random/in-place ops: S(n)->S(n) is correct but validator rejects because
+    # per-shard RNG state differs from single-process ground truth.
+    xfail("cauchy"),
+    xfail("geometric"),
+    xfail("log_normal"),
+    xfail("nn.functional.rrelu"),
+    # factory-like ops: some OpInfo samples request device='cuda' in kwargs,
+    # which the CPU-based LocalTensor validator can't simulate correctly.
+    xfail("full_like"),
+    xfail("new_full"),
+    xfail("new_ones"),
+    xfail("ones_like"),
+    # real incorrect rules
+    xfail("broadcast_to"),
+    xfail("dist"),
+    xfail("expand"),
+    xfail("expand_copy"),
+    xfail("fft.fft"),
+    xfail("fft.rfft"),
+    xfail("fft.rfft2"),
+    xfail("fft.rfftn"),
+    xfail("__getitem__"),
+    xfail("index_select"),
+    xfail("linalg.matrix_norm"),
+    xfail("linalg.norm"),
+    xfail("linalg.vector_norm"),
+    xfail("masked.logsumexp"),
+    xfail("masked.norm"),
+    xfail("masked.prod"),
+    xfail("max", "binary"),
+    xfail("min", "binary"),
+    xfail("nn.functional.embedding"),
+    xfail("norm"),
+    xfail("reshape"),
+    xfail("__rmatmul__"),
+    xfail("__rmod__"),
+    xfail("__rpow__"),
+    xfail("sum_to_size"),
+    xfail("unflatten"),
+    xfail("view"),
+    xfail("view_copy"),
+    xfail("where"),
 }
 
 # Add a list of ops that are currently failing BW pass
@@ -1094,116 +1312,69 @@ class TestUnbackedDTensorOps(TestDTensorOps):
         )
 
 
-class TestSingleDimStrategies(DTensorOpTestBase):
-    @property
-    def world_size(self) -> int:
-        return 2
+class TestStrategyValidation(TestCase):
+    """Validate DTensor sharding rules have no false positives (incorrect rules).
 
-    def _extract_aten_op_and_args(self, torch_op, args, kwargs):
-        with DebugMode(store_original_args=True) as debug_mode:
-            try:
-                torch_op(*args, **kwargs)
-            except Exception:
-                self.skipTest(f"Op {torch_op} failed on replicated DTensors")
+    For each op with DTensor support, queries all claimed sharding strategies
+    and verifies them against ground truth by simulating distributed execution
+    on a single machine via LocalTensor.
+    """
 
-        for op in debug_mode.operators:
-            if isinstance(op, _OpCall) and "aten" in str(op.op):
-                return op.op, op.args, op.kwargs
+    WORLD_SIZE = 2
+    _seen_op_names: set[str] = set()
 
-        self.skipTest(f"Op {torch_op} failed to extract aten op")
+    def setUp(self) -> None:
+        super().setUp()
+        dist.init_process_group("fake", rank=0, world_size=self.WORLD_SIZE)
+
+    def tearDown(self):
+        super().tearDown()
+        from torch.distributed.tensor.debug import _clear_sharding_prop_cache
+
+        _clear_sharding_prop_cache()
+        try:
+            dist.destroy_process_group()
+        except AssertionError:
+            pass
 
     @suppress_warnings
     @ops(op_db, allowed_dtypes=(torch.float,))
-    def test_single_dim_strategy(self, dtype, op):
-        torch.manual_seed(42)
-        mesh = init_device_mesh(DEVICE_TYPE, (self.world_size,))
-        sharding_prop = DTensor._op_dispatcher.sharding_propagator
+    @skipOps(
+        op_db,
+        "TestStrategyValidation",
+        "test_strategy_validation_op_db",
+        strategy_validation_no_strategy | strategy_validation_incorrect_rules,
+    )
+    def test_strategy_validation_op_db(self, dtype, op):
+        # compare_operator processes all OpInfo variants for a given name
+        # internally, so deduplicate to avoid redundant work
+        if op.name in self._seen_op_names:
+            return
+        self._seen_op_names.add(op.name)
 
-        try:
-            samples = list(op.sample_inputs(DEVICE_TYPE, dtype, requires_grad=False))
-        except Exception:
-            self.skipTest(f"Failed to get sample inputs for {op.name}")
-        if not samples:
-            self.skipTest(f"No sample inputs for {op.name}")
-
-        sample = samples[0]
-        args = (sample.input,) + tuple(sample.args)
-
-        # create Replicated DTensors
-        try:
-            dtensor_args, dtensor_kwargs = pytree.tree_map_only(
-                torch.Tensor,
-                lambda t: distribute_tensor(t, mesh, (Replicate(),)),
-                (args, sample.kwargs),
-            )
-        except Exception:
-            self.skipTest(f"Failed to create replicate DTensors for {op.name}")
-
-        # extract aten op/args/kwargs
-        aten_op, aten_args, aten_kwargs = self._extract_aten_op_and_args(
-            op.op, dtensor_args, dtensor_kwargs
+        stats = compare_operator(
+            op.name,
+            device=DEVICE_TYPE,
+            dtype=dtype,
+            world_size=self.WORLD_SIZE,
+            incorrect_only=True,
+            verbose=True,
         )
-
-        single_dim_strats = sharding_prop.op_single_dim_strategy_funcs
-        if aten_op not in single_dim_strats:
-            self.skipTest(f"No single-dim strategy for {op.name}: {aten_op}")
-
-        # extract tensor_meta, full tensors
-        all_tensor_meta = []
-
-        def _collect_tensor_meta(dt):
-            meta = dt._spec.tensor_meta
-            all_tensor_meta.append(meta)
-            return meta
-
-        args_meta, kwargs_meta = pytree.tree_map_only(
-            DTensor, _collect_tensor_meta, (aten_args, aten_kwargs)
+        self.assertFalse(
+            stats.no_dtensor_support,
+            f"{op.name}: no DTensor sharding strategy registered",
         )
-        full_args, full_kwargs = pytree.tree_map_only(
-            torch.Tensor, lambda t: t.full_tensor(), (aten_args, aten_kwargs)
+        if stats.total_samples == 0:
+            self.skipTest(f"No valid samples for {op.name}")
+        self.assertEqual(
+            len(stats.false_positives),
+            0,
+            f"{op.name}: {len(stats.false_positives)} incorrect rules:\n"
+            + "\n".join(
+                f"  {d.input_placements} -> {d.output_placements}"
+                for d in stats.false_positives[:10]
+            ),
         )
-
-        # enumerate strategies, replace placeholders with Shard
-        strategies = pytree.tree_map_only(
-            _ShardingPlaceholder,
-            lambda s: Shard(s.dim),
-            single_dim_strats[aten_op](aten_op, args_meta, kwargs_meta),
-        )
-        n_inputs = len(all_tensor_meta)
-        for strategy in strategies:
-            input_placements = strategy[-n_inputs:]
-            output_placements = strategy[:-n_inputs]
-
-            # skip strategies with invalid shards
-            def is_invalid_shard(meta, p):
-                ndim = len(meta.shape)
-                if (
-                    not isinstance(p, Shard)
-                    or ndim == 0
-                    or p.dim >= ndim
-                    or meta.shape[p.dim] == 0
-                    or meta.shape[p.dim] % self.world_size != 0
-                ):
-                    return True
-                return False
-
-            if any(
-                is_invalid_shard(t, p)
-                for t, p in zip(all_tensor_meta, input_placements)
-            ):
-                continue
-
-            self.assertTrue(
-                validate_sharding_rule_sample(
-                    aten_op,
-                    full_args,
-                    full_kwargs,
-                    input_placements,
-                    tuple(output_placements),
-                    mesh,
-                ),
-                f"{op.name}: {input_placements} -> {tuple(output_placements)} failed",
-            )
 
 
 class TestCompiledDTensorOps(TestDTensorOps):
@@ -1283,7 +1454,7 @@ instantiate_device_type_tests(
 )
 
 instantiate_device_type_tests(
-    TestSingleDimStrategies, globals(), only_for=(DEVICE_TYPE,)
+    TestStrategyValidation, globals(), only_for=(DEVICE_TYPE,)
 )
 
 instantiate_device_type_tests(
