@@ -19308,7 +19308,7 @@ op_db: list[OpInfo] = [
                DecorateInfo(slowTest, 'TestCompositeCompliance', 'test_forward_ad'),
                # MPS matmul aborts with uint8 input
                DecorateInfo(unittest.skip("MPS driver aborts process on uint8 matmul"), 'TestCommon', 'test_dtypes',
-                           device_type='mps'),
+                            device_type='mps'),
            )),
     OpInfo('pca_lowrank',
            op=lambda *args, **kwargs: wrapper_set_seed(
