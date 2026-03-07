@@ -46,10 +46,7 @@ jobs:
 
       - name: Install and initialize lintrunner
         run: |
-          pip install lintrunner pyyaml==6.0.2 uv
-          if [ "$IS_GHSTACK" = "true" ]; then
-            pip install ghstack
-          fi
+          pip install lintrunner pyyaml==6.0.2 uv ghstack
           lintrunner init --take "$LINTERS"
 
       - name: Setup committer id
