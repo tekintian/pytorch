@@ -1491,6 +1491,9 @@ class ExternKernelSchedulerNode(BaseSchedulerNode):
     def is_extern(self) -> bool:
         return True
 
+    def is_template(self) -> bool:
+        return isinstance(self.node, ir.TemplateBuffer)
+
     def has_side_effects(self) -> bool:
         assert self.node is not None
         return hasattr(self.node, "has_side_effects") and self.node.has_side_effects()
@@ -5531,11 +5534,17 @@ class Scheduler:
         """
         Is this node unfusable under any conditions.
         """
-        return (
-            isinstance(node, (NopKernelSchedulerNode,))
-            and not node.is_template()
-            and not is_output_of_multi_outputs_template(node.node)
-        )
+        if isinstance(node, NopKernelSchedulerNode):
+            return not node.is_template() and not is_output_of_multi_outputs_template(
+                node.node
+            )
+        if isinstance(node, ExternKernelSchedulerNode):
+            if isinstance(node.node, ir.UserDefinedTritonKernel):
+                return not node.node.can_fuse_epilogue()
+            return not node.is_template() and not is_output_of_multi_outputs_template(
+                node.node
+            )
+        return False
 
     def check_prologue_fusion_heuristics_fusable(
         self,
