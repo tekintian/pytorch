@@ -5531,6 +5531,10 @@ def _new_group_with_tag(
     if ranks is not None:
         if sort_ranks:
             ranks = sorted(ranks)
+        if len(set(ranks)) != len(ranks):
+            raise ValueError(
+                f"ranks list must not contain duplicate entries, got {ranks}"
+            )
         group_world_size = len(ranks)
         if group_world_size > global_world_size:
             raise ValueError(
@@ -5541,10 +5545,7 @@ def _new_group_with_tag(
         # check ranks' sanity
         for rank in ranks:
             if rank < 0 or rank >= global_world_size:
-                raise ValueError(
-                    "The new group's rank should be within "
-                    "the world_size set by init_process_group"
-                )
+                raise ValueError(f"Rank {rank} is not within [0, {global_world_size})")
         if global_rank in ranks:
             group_rank = ranks.index(global_rank)
         else:
